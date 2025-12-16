@@ -83,15 +83,16 @@ function computeLogRatio(journeys: number, vehicles: number): number {
 }
 
 export default function HexagonMap({
-  demandEvents,
-  supplyVehicles,
-  multiplierData,
+  // ✅ FIX: runtime-safe defaults to prevent "undefined.length" / "undefined.forEach"
+  demandEvents = [],
+  supplyVehicles = [],
+  multiplierData = [],
+  heatmap = [],
   basePrice,
   snapshotTime,
   snapshotRange,
   timeframeMinutes,
   showDemandVsSupply,
-  heatmap,
   showMap,
   hexagonResolution,
 }: HexagonMapProps) {
@@ -107,11 +108,14 @@ export default function HexagonMap({
 
   // Use custom heatmap if provided, otherwise use the default
   const colorScale = useMemo(() => {
-    const heatmapToUse = heatmap.length > 0 ? heatmap : [
-      { ratio: 0, color: [0, 0, 255] as [number, number, number] },
-      { ratio: 0.5, color: [0, 255, 0] as [number, number, number] },
-      { ratio: 1, color: [255, 0, 0] as [number, number, number] },
-    ];
+    const heatmapToUse =
+      heatmap.length > 0
+        ? heatmap
+        : [
+            { ratio: 0, color: [0, 0, 255] as [number, number, number] },
+            { ratio: 0.5, color: [0, 255, 0] as [number, number, number] },
+            { ratio: 1, color: [255, 0, 0] as [number, number, number] },
+          ];
     return heatmapToUse.sort((a, b) => a.ratio - b.ratio);
   }, [heatmap]);
 
@@ -179,7 +183,10 @@ export default function HexagonMap({
     (time: Date) => {
       if (!snapshotRange) return true;
       const timeValue = time.getTime();
-      return timeValue >= snapshotRange.minTime.getTime() && timeValue <= snapshotRange.maxTime.getTime();
+      return (
+        timeValue >= snapshotRange.minTime.getTime() &&
+        timeValue <= snapshotRange.maxTime.getTime()
+      );
     },
     [snapshotRange]
   );
