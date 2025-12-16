@@ -19,28 +19,6 @@ interface SupplyData {
   longitude: number;
 }
 
-interface HexagonData {
-  hexId: string;
-  ratio: number;
-  center: [number, number];
-  minRatio?: number;
-  maxRatio?: number;
-  sumDemand?: number;
-  sumSupply?: number;
-  finalPrice?: number;
-}
-
-interface HeatmapColor {
-  ratio: number;
-  color: [number, number, number];
-}
-
-const DEFAULT_HEATMAP: HeatmapColor[] = [
-  { ratio: 0, color: [0, 0, 255] },
-  { ratio: 0.5, color: [0, 255, 0] },
-  { ratio: 1, color: [255, 0, 0] },
-];
-
 interface MultiplierData {
   minRatio: number;
   multiplier: number;
@@ -59,6 +37,22 @@ interface MapViewState {
   bearing: number;
 }
 
+interface HexagonData {
+  hexId: string;
+  ratio: number;
+  center: [number, number];
+  demand?: number;
+  supply?: number;
+  finalPrice?: number;
+}
+
+interface LabelPosition {
+  x: number;
+  y: number;
+  ratio: number;
+  displayValue: string;
+}
+
 interface HexagonMapProps {
   demandEvents: EventData[];
   supplyVehicles: SupplyData[];
@@ -68,27 +62,20 @@ interface HexagonMapProps {
   snapshotRange: SnapshotRange | null;
   timeframeMinutes: number;
   showDemandVsSupply: boolean;
-  heatmap: HeatmapColor[];
   showMap: boolean;
   hexagonResolution: number;
 }
 
-interface LabelPosition {
-  x: number;
-  y: number;
-  displayValue: string;
-}
-
 export default function HexagonMap({
-  demandEvents,
-  supplyVehicles,
-  multiplierData,
+  // ✅ Default arrays to prevent "undefined.length" crashes in prod builds (Vercel)
+  demandEvents = [],
+  supplyVehicles = [],
+  multiplierData = [],
   basePrice,
   snapshotTime,
   snapshotRange,
   timeframeMinutes,
   showDemandVsSupply,
-  heatmap,
   showMap,
   hexagonResolution,
 }: HexagonMapProps) {
@@ -101,96 +88,24 @@ export default function HexagonMap({
   });
 
   const [labelPositions, setLabelPositions] = useState<LabelPosition[]>([]);
+  const deckRef = useRef<any>(null);
 
-  // Use custom heatmap if provided, otherwise use the default
-  const colorScale = useMemo(() => {
-    const heatmapToUse = heatmap.length > 0 ? heatmap : DEFAULT_HEATMAP;
-    return heatmapToUse.sort((a, b) => a.ratio - b.ratio);
-  }, [heatmap]);
+  // Log-normalized demand/supply ratio.
+  // Mirrors:
+  //   log(journeys + 1) / log(vehicles + 1)
+  // Special rules:
+  // - vehicles === 0 && journeys > 0 => 1
+  // - vehicles === 0 && journeys === 0 => 0
+  const computeLogRatio = (journeys: number, vehicles: number): number => {
+    if (vehicles === 0) return journeys > 0 ? 1 : 0;
+    if (journeys === 0) return 0;
 
-  const getColorFromRatio = useCallback(
-    (ratio: number): [number, number, number] => {
-      if (Number.isNaN(ratio) || !isFinite(ratio)) {
-        return [200, 200, 200];
-      }
+    const logJourneys = Math.log(journeys + 1);
+    const logVehicles = Math.log(vehicles + 1);
 
-      const clampedRatio = Math.max(0, Math.min(1, ratio));
-
-      // If only one color is defined, return it
-      if (colorScale.length === 1) {
-        return colorScale[0].color;
-      }
-
-      // Find the two colors between which our ratio lies
-      for (let i = 0; i < colorScale.length - 1; i++) {
-        const start = colorScale[i];
-        const end = colorScale[i + 1];
-
-        if (clampedRatio >= start.ratio && clampedRatio <= end.ratio) {
-          const range = end.ratio - start.ratio || 1; // Avoid division by zero
-          const t = (clampedRatio - start.ratio) / range;
-
-          // Linear interpolation between start.color and end.color
-          const interpolatedColor: [number, number, number] = [
-            Math.round(start.color[0] + (end.color[0] - start.color[0]) * t),
-            Math.round(start.color[1] + (end.color[1] - start.color[1]) * t),
-            Math.round(start.color[2] + (end.color[2] - start.color[2]) * t),
-          ];
-
-          return interpolatedColor;
-        }
-      }
-
-      // If ratio is outside the defined range, clamp to the nearest color
-      if (clampedRatio <= colorScale[0].ratio) {
-        return colorScale[0].color;
-      }
-      return colorScale[colorScale.length - 1].color;
-    },
-    [colorScale]
-  );
-
-  // Calculate time range based on demand events and supply vehicles
-  const calculatedTimeRange = useMemo<SnapshotRange | null>(() => {
-    const times: number[] = [];
-
-    demandEvents.forEach((event) => times.push(new Date(event.timestamp).getTime()));
-    supplyVehicles.forEach((vehicle) => {
-      times.push(new Date(vehicle.startTime).getTime());
-      times.push(new Date(vehicle.endTime).getTime());
-    });
-
-    if (times.length === 0) return null;
-
-    return {
-      minTime: new Date(Math.min(...times)),
-      maxTime: new Date(Math.max(...times)),
-    };
-  }, [demandEvents, supplyVehicles]);
-
-  const handleDemandUpload = async (file: File) => {
-    // Placeholder for handling demand upload directly in map component if needed
-    console.log("Demand file uploaded:", file.name);
+    // logVehicles can't be 0 when vehicles > 0, but keep a safe guard.
+    return logVehicles === 0 ? 1 : logJourneys / logVehicles;
   };
-
-  const handleSupplyUpload = async (file: File) => {
-    // Placeholder for handling supply upload directly in map component if needed
-    console.log("Supply file uploaded:", file.name);
-  };
-
-  const handleMultiplierUpload = async (file: File) => {
-    // Placeholder for handling multiplier upload directly in map component if needed
-    console.log("Multiplier file uploaded:", file.name);
-  };
-
-  const isTimeInRange = useCallback(
-    (time: Date) => {
-      if (!snapshotRange) return true;
-      const timeValue = time.getTime();
-      return timeValue >= snapshotRange.minTime.getTime() && timeValue <= snapshotRange.maxTime.getTime();
-    },
-    [snapshotRange]
-  );
 
   // Filter demand events based on snapshot time and timeframe window
   const filteredDemand = useMemo(() => {
@@ -210,27 +125,24 @@ export default function HexagonMap({
     });
   }, [supplyVehicles, snapshotTime]);
 
-  // Ensure snapshot time is within the calculated or provided range
+  // Ensure snapshot time is within the provided range (if any)
   const isSnapshotValid = useMemo(() => {
-    const range = snapshotRange || calculatedTimeRange;
-    if (!range) return true;
-    return isTimeInRange(snapshotTime);
-  }, [snapshotTime, snapshotRange, calculatedTimeRange, isTimeInRange]);
+    if (!snapshotRange) return true;
+    const t = snapshotTime.getTime();
+    return t >= snapshotRange.minTime.getTime() && t <= snapshotRange.maxTime.getTime();
+  }, [snapshotTime, snapshotRange]);
 
-  // Get multiplier for a given ratio based on precise ratio
   const getMultiplier = (ratio: number): number => {
     if (multiplierData.length === 0) return 1;
 
-    // Sort by minRatio descending (should already be sorted, but ensure it)
+    // Sort by minRatio descending (ensure correct thresholding)
     const sorted = [...multiplierData].sort((a, b) => b.minRatio - a.minRatio);
 
     for (const entry of sorted) {
-      if (ratio >= entry.minRatio) {
-        return entry.multiplier;
-      }
+      if (ratio >= entry.minRatio) return entry.multiplier;
     }
 
-    // If ratio is below all defined thresholds, return the last multiplier
+    // If ratio is below all thresholds, return the last multiplier
     return sorted[sorted.length - 1].multiplier;
   };
 
@@ -254,60 +166,9 @@ export default function HexagonMap({
       allHexIds.add(hexId);
     });
 
-    // Peek into nearby empty hexagons around active ones
-    const MAX_NEIGHBORS = 1;
-    const inactiveSet = new Set<string>();
+    const hexMap = new Map<string, HexagonData>();
 
     allHexIds.forEach((hexId) => {
-      try {
-        const neighbors = gridDisk(hexId, MAX_NEIGHBORS);
-        neighbors.forEach((neighborId) => {
-          if (
-            !allHexIds.has(neighborId) &&
-            !inactiveSet.has(neighborId) &&
-            demandMap.get(neighborId) === undefined &&
-            supplyMap.get(neighborId) === undefined
-          ) {
-            inactiveSet.add(neighborId);
-          }
-        });
-      } catch (e) {
-        // Skip if gridDisk fails
-      }
-    });
-
-    // Create inactive hexagon data
-    const inactive = Array.from(inactiveSet).map((hexId) => {
-      const [lat, lng] = cellToLatLng(hexId);
-      return {
-        hexId,
-        ratio: 0,
-        center: [lng, lat] as [number, number],
-      };
-    });
-
-    // Calculate ratios for hexagons with data
-    const hexMap = new Map<
-      string,
-      {
-        hexId: string;
-        ratio: number;
-        center: [number, number];
-        minRatio?: number;
-        maxRatio?: number;
-        sumDemand?: number;
-        sumSupply?: number;
-        finalPrice?: number;
-      }
-    >();
-
-    const calculateTimeWindow = (eventTime: Date) => {
-      const windowStart = new Date(eventTime.getTime() - timeframeMinutes * 60 * 1000);
-      return { windowStart, windowEnd: eventTime };
-    };
-
-    allHexIds.forEach((hexId) => {
-      const [lat, lng] = cellToLatLng(hexId);
       const demand = demandMap.get(hexId) || 0;
       const supply = supplyMap.get(hexId) || 0;
 
@@ -315,18 +176,16 @@ export default function HexagonMap({
       let ratio: number;
       let finalPrice: number = 0;
 
-      // Determine if demand vs supply or individual counts should be shown
-      const hasBothData = demand > 0 && supply > 0;
-      const hasDemandOnly = demand > 0 && supply === 0;
-      const hasSupplyOnly = supply > 0 && demand === 0;
+      const hasBothData = demandMap.size > 0 && supplyMap.size > 0;
+      const hasDemandOnly = demandMap.size > 0 && supplyMap.size === 0;
       const hasMultiplier = multiplierData.length > 0;
 
       if (hasBothData) {
-        // Show coefficient (demand / supply) when both files are uploaded
+        // ✅ NEW: log-normalised ratio (with your special supply=0 rules)
         if (supply === 0) {
           ratio = demand > 0 ? 1 : 0;
         } else {
-          ratio = demand / supply;
+          ratio = computeLogRatio(demand, supply);
         }
 
         // If multiplier and base price are available, calculate final price
@@ -335,100 +194,98 @@ export default function HexagonMap({
           finalPrice = multiplier * basePrice;
         }
       } else if (hasDemandOnly) {
-        // Show sum of demand events
+        // Show sum of demand events when only demand file is uploaded
         ratio = demand;
-      } else if (hasSupplyOnly) {
-        // Show sum of supply vehicles
-        ratio = supply;
       } else {
         ratio = 0;
       }
 
+      const [lat, lng] = cellToLatLng(hexId);
       hexMap.set(hexId, {
         hexId,
         ratio,
         center: [lng, lat],
-        sumDemand: demand,
-        sumSupply: supply,
-        finalPrice: hasBothData && hasMultiplier ? finalPrice : undefined,
+        demand,
+        supply,
+        finalPrice,
       });
     });
 
-    // Ensure all inactive hexagons are included
-    inactive.forEach((hex) => {
-      if (!hexMap.has(hex.hexId)) {
-        hexMap.set(hex.hexId, hex);
+    const activeHexIds = new Set(hexMap.keys());
+    const inactiveSet = new Set<string>();
+
+    // Find all neighboring hexagons (1 ring around each active hexagon)
+    activeHexIds.forEach((hexId) => {
+      try {
+        const neighbors = gridDisk(hexId, 1);
+        neighbors.forEach((neighborId) => {
+          if (!activeHexIds.has(neighborId)) inactiveSet.add(neighborId);
+        });
+      } catch (e) {
+        // ignore
       }
     });
 
-    const activeHexes: HexagonData[] = Array.from(hexMap.values());
+    const inactive: HexagonData[] = Array.from(inactiveSet).map((hexId) => {
+      const [lat, lng] = cellToLatLng(hexId);
+      return {
+        hexId,
+        ratio: 0,
+        center: [lng, lat],
+      };
+    });
 
-    return {
-      activeHexagons: activeHexes,
-      inactiveHexagons: inactive,
-    };
+    const active = Array.from(hexMap.values());
+    return { activeHexagons: active, inactiveHexagons: inactive };
   }, [
     filteredDemand,
     availableSupply,
+    hexagonResolution,
     multiplierData,
     basePrice,
-    timeframeMinutes,
-    showDemandVsSupply,
-    hexagonResolution,
+    computeLogRatio,
   ]);
 
-  // Calculate dynamic font size based on zoom level
-  const getFontSize = (zoom: number) => {
-    const baseZoom = 12;
-    const baseFontSize = 28;
-    const minFontSize = 8;
-    const maxFontSize = 28;
+  // Auto-center map on first data load
+  useEffect(() => {
+    const allPoints = [
+      ...filteredDemand.map((d) => ({ lat: d.latitude, lng: d.longitude })),
+      ...availableSupply.map((s) => ({ lat: s.latitude, lng: s.longitude })),
+    ];
 
-    const scale = Math.pow(2, (zoom - baseZoom) * 0.5);
-    const fontSize = baseFontSize * scale;
-    return Math.max(minFontSize, Math.min(maxFontSize, fontSize));
+    if (allPoints.length === 0) return;
+
+    const lats = allPoints.map((p) => p.lat);
+    const lngs = allPoints.map((p) => p.lng);
+
+    const avgLat = lats.reduce((a, b) => a + b, 0) / lats.length;
+    const avgLng = lngs.reduce((a, b) => a + b, 0) / lngs.length;
+
+    setViewState((prev) => ({
+      ...prev,
+      latitude: avgLat,
+      longitude: avgLng,
+    }));
+  }, [filteredDemand, availableSupply]);
+
+  const formatRatio = (ratio: number) => {
+    if (ratio === Infinity) return "∞";
+    if (ratio === 0) return "0";
+    return ratio.toFixed(2);
   };
 
   // Convert hexagon centers to screen coordinates
-  const hexagonCenters = useMemo(() => {
+  const updateLabels = useCallback(() => {
+    const deck = deckRef.current?.deck;
+    if (!deck) return;
+
+    const vs = deck.viewState;
     const viewport = new WebMercatorViewport({
-      longitude: viewState.longitude,
-      latitude: viewState.latitude,
-      zoom: viewState.zoom,
-      pitch: viewState.pitch,
-      bearing: viewState.bearing,
-      width: window.innerWidth,
-      height: window.innerHeight,
-    });
-
-    return activeHexagons.map((hex) => {
-      const [x, y] = viewport.project(hex.center);
-      const displayValue =
-        hex.finalPrice && hex.finalPrice > 0 && basePrice > 0 && multiplierData.length > 0
-          ? `$${hex.finalPrice.toFixed(2)}`
-          : hex.ratio.toFixed(2);
-
-      return {
-        x,
-        y,
-        displayValue,
-      };
-    });
-  }, [activeHexagons, viewState, multiplierData, basePrice]);
-
-  const deckRef = useRef<any>(null);
-
-  // Update label positions once the map is rendered
-  const handleAfterRender = () => {
-    const viewState = deckRef.current?.deck?.viewState;
-    if (!viewState) return;
-
-    const viewport = new WebMercatorViewport({
-      longitude: viewState.longitude,
-      latitude: viewState.latitude,
-      zoom: viewState.zoom,
-      pitch: viewState.pitch,
-      bearing: viewState.bearing,
+      longitude: vs.longitude,
+      latitude: vs.latitude,
+      zoom: vs.zoom,
+      pitch: vs.pitch,
+      bearing: vs.bearing,
       width: window.innerWidth,
       height: window.innerHeight,
     });
@@ -436,33 +293,33 @@ export default function HexagonMap({
     const positions = activeHexagons.map((hex) => {
       const [x, y] = viewport.project(hex.center);
       const displayValue =
-        hex.finalPrice && hex.finalPrice > 0 && basePrice > 0 && multiplierData.length > 0
-          ? `$${hex.finalPrice.toFixed(2)}`
-          : hex.ratio.toFixed(2);
+        multiplierData.length > 0 && basePrice > 0 && hex.finalPrice
+          ? `${hex.finalPrice.toFixed(2)}`
+          : formatRatio(hex.ratio);
 
-      return {
-        x,
-        y,
-        displayValue,
-      };
+      return { x, y, ratio: hex.ratio, displayValue };
     });
 
     setLabelPositions(positions);
-  };
+  }, [activeHexagons, multiplierData.length, basePrice]);
 
   useEffect(() => {
-    const updateSize = () => {
-      if (deckRef.current) {
-        deckRef.current.deck.setProps({
-          width: window.innerWidth,
-          height: window.innerHeight,
-        });
-      }
-    };
+    updateLabels();
+  }, [updateLabels]);
 
-    window.addEventListener("resize", updateSize);
-    return () => window.removeEventListener("resize", updateSize);
-  }, []);
+  useEffect(() => {
+    const onResize = () => updateLabels();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [updateLabels]);
+
+  const getFillColor = (ratio: number): [number, number, number] => {
+    // Simple clamped gradient 0..1 => green..red
+    const clamped = Math.max(0, Math.min(1, ratio));
+    const r = Math.round(255 * clamped);
+    const g = Math.round(255 * (1 - clamped));
+    return [r, g, 0];
+  };
 
   const layers = useMemo(() => {
     const hexagonLayer = new H3HexagonLayer<HexagonData>({
@@ -472,17 +329,8 @@ export default function HexagonMap({
       wireframe: true,
       filled: true,
       getHexagon: (d) => d.hexId,
-      getFillColor: (d) => {
-        return getColorFromRatio(d.ratio);
-      },
-      getElevation: (d) => {
-        // Higher elevation for higher ratio
-        if (!Number.isFinite(d.ratio)) return 0;
-        if (multiplierData.length > 0 && basePrice > 0 && d.finalPrice && d.finalPrice > 0) {
-          return d.finalPrice * 10;
-        }
-        return d.ratio * 100;
-      },
+      getFillColor: (d) => getFillColor(d.ratio),
+      getElevation: (d) => (Number.isFinite(d.ratio) ? d.ratio * 100 : 0),
       elevationScale: 1,
       extruded: true,
       opacity: 0.8,
@@ -511,7 +359,7 @@ export default function HexagonMap({
       : null;
 
     return tileLayer ? [tileLayer, hexagonLayer] : [hexagonLayer];
-  }, [activeHexagons, getColorFromRatio, multiplierData, basePrice, showMap]);
+  }, [activeHexagons, showMap]);
 
   if (!isSnapshotValid) {
     return (
@@ -526,13 +374,11 @@ export default function HexagonMap({
           initialViewState={viewState}
           controller={true}
           layers={[]}
-          onAfterRender={handleAfterRender}
+          style={{ position: "relative" }}
         />
       </div>
     );
   }
-
-  const fontSize = getFontSize(viewState.zoom);
 
   return (
     <div className="relative w-full h-full bg-gray-900 text-white">
@@ -541,8 +387,10 @@ export default function HexagonMap({
         initialViewState={viewState}
         controller={true}
         layers={layers}
-        onViewStateChange={({ viewState: newViewState }) => setViewState(newViewState as MapViewState)}
-        onAfterRender={handleAfterRender}
+        onViewStateChange={({ viewState: newViewState }) =>
+          setViewState(newViewState as MapViewState)
+        }
+        onAfterRender={updateLabels}
         style={{ position: "relative" }}
       />
 
@@ -555,7 +403,6 @@ export default function HexagonMap({
             style={{
               left: `${pos.x}px`,
               top: `${pos.y}px`,
-              fontSize: `${fontSize}px`,
               transform: "translate(-50%, -50%)",
               color: "white",
               textShadow: "0 0 5px rgba(0,0,0,0.8)",
@@ -568,7 +415,7 @@ export default function HexagonMap({
         ))}
       </div>
 
-      {activeHexagons.length === 0 && (
+      {activeHexagons.length === 0 && inactiveHexagons.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-800 text-gray-400">
           Upload demand and supply files to get started
         </div>
