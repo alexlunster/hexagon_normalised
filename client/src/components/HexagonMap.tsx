@@ -103,6 +103,18 @@ export default function HexagonMap({
     });
   }, [supplyVehicles, snapshotTime]);
 
+  // Compute log ratio with normalization
+  const computeLogRatio = useCallback((journeys: number, vehicles: number): number => {
+    if (vehicles === 0) {
+      return journeys > 0 ? 1 : 0.0;
+    }
+    
+    const logJourneys = Math.log(journeys + 1); // Add 1 to avoid log(0)
+    const logVehicles = Math.log(vehicles + 1);
+    
+    return logJourneys / logVehicles;
+  }, []);
+
   // Get multiplier from ratio
   const getMultiplier = (ratio: number): number => {
     if (multiplierData.length === 0) return 1;
@@ -155,12 +167,8 @@ export default function HexagonMap({
       const hasMultiplier = multiplierData.length > 0;
       
       if (hasBothData) {
-        // Show coefficient (demand / supply) when both files are uploaded
-        if (supply === 0) {
-          ratio = demand > 0 ? 1 : 0.0;
-        } else {
-          ratio = demand / supply;
-        }
+        // Use log normalization for ratio calculation
+        ratio = computeLogRatio(demand, supply);
         
         // If multiplier and base price are available, calculate final price
         if (hasMultiplier && basePrice > 0) {
@@ -219,7 +227,7 @@ export default function HexagonMap({
     console.log('Created', active.length, 'active hexagons from', filteredDemand.length, 'demand and', availableSupply.length, 'supply');
     
     return { activeHexagons: active, inactiveHexagons: inactive };
-  }, [filteredDemand, availableSupply, hexagonResolution, multiplierData, basePrice]);
+  }, [filteredDemand, availableSupply, hexagonResolution, multiplierData, basePrice, computeLogRatio]);
 
   // Auto-center map on first data load
   useEffect(() => {
