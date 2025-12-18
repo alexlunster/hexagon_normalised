@@ -1,6 +1,7 @@
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -19,13 +20,13 @@ interface ControlPanelProps {
   onMultiplierUpload: (file: File) => void;
   onDeleteMultiplier: () => void;
   basePrice: number;
-  onBasePriceChange: (price: number) => void;
+  onBasePriceChange: (value: number) => void;
   hexagonResolution: number;
-  onHexagonResolutionChange: (resolution: number) => void;
+  onHexagonResolutionChange: (value: number) => void;
   timeframeMinutes: number;
-  onTimeframeChange: (minutes: number) => void;
+  onTimeframeChange: (value: number) => void;
   snapshotTime: Date;
-  onSnapshotTimeChange: (time: Date) => void;
+  onSnapshotTimeChange: (value: Date) => void;
   minTime: Date | null;
   maxTime: Date | null;
   demandCount: number;
@@ -34,6 +35,8 @@ interface ControlPanelProps {
   isUploadingDemand: boolean;
   isUploadingSupply: boolean;
   isUploadingMultiplier: boolean;
+  normalizationEnabled: boolean;
+  onNormalizationEnabledChange: (enabled: boolean) => void;
 }
 
 export default function ControlPanel({
@@ -59,76 +62,60 @@ export default function ControlPanel({
   isUploadingDemand,
   isUploadingSupply,
   isUploadingMultiplier,
+  normalizationEnabled,
+  onNormalizationEnabledChange,
 }: ControlPanelProps) {
   const demandInputRef = useRef<HTMLInputElement>(null);
   const supplyInputRef = useRef<HTMLInputElement>(null);
   const multiplierInputRef = useRef<HTMLInputElement>(null);
 
+  const resolutionOptions = [
+    { value: 6, label: "Resolution 6 (Large)" },
+    { value: 7, label: "Resolution 7" },
+    { value: 8, label: "Resolution 8 (Default)" },
+    { value: 9, label: "Resolution 9 (Small)" },
+    { value: 10, label: "Resolution 10 (Very Small)" },
+  ];
+
+  const timeframeOptions = [
+    { value: 15, label: "15 minutes" },
+    { value: 30, label: "30 minutes" },
+    { value: 60, label: "1 hour" },
+    { value: 120, label: "2 hours" },
+    { value: 240, label: "4 hours" },
+    { value: 480, label: "8 hours" },
+    { value: 720, label: "12 hours" },
+    { value: 1440, label: "24 hours" },
+  ];
+
   const handleDemandSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      onDemandUpload(file);
-      if (demandInputRef.current) {
-        demandInputRef.current.value = "";
-      }
-    }
+    if (file) onDemandUpload(file);
+    e.target.value = "";
   };
 
   const handleSupplySelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      onSupplyUpload(file);
-      if (supplyInputRef.current) {
-        supplyInputRef.current.value = "";
-      }
-    }
+    if (file) onSupplyUpload(file);
+    e.target.value = "";
   };
 
   const handleMultiplierSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      onMultiplierUpload(file);
-      if (multiplierInputRef.current) {
-        multiplierInputRef.current.value = "";
-      }
-    }
+    if (file) onMultiplierUpload(file);
+    e.target.value = "";
   };
 
-  const getResolutionLabel = (level: number) => {
-    const sizes: Record<number, string> = {
-      5: "~100-200 km",
-      6: "~14-36 km",
-      7: "~2-5 km",
-      8: "~0.7-1.9 km",
-      9: "~100-300 m",
-      10: "~66-122 m",
-      11: "~9-17 m",
-      12: "~1.3-2.5 m",
-    };
-    return sizes[level] || "~0.7-1.9 km";
-  };
-
-  const formatTime = (date: Date) => {
-    return date.toLocaleTimeString("en-US", {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: true,
-    });
-  };
-
-  const formatDate = (date: Date) => {
-    return date.toLocaleDateString("en-US", {
-      month: "2-digit",
-      day: "2-digit",
-      year: "numeric",
-    });
-  };
-
-  // Calculate date and time slider values
-  const getDateValue = (date: Date) => {
+  const getCurrentDayIndex = () => {
     if (!minTime || !maxTime) return 0;
-    const totalDays = Math.ceil((maxTime.getTime() - minTime.getTime()) / (1000 * 60 * 60 * 24));
-    const currentDay = Math.floor((date.getTime() - minTime.getTime()) / (1000 * 60 * 60 * 24));
+    const totalMs = maxTime.getTime() - minTime.getTime();
+    if (totalMs <= 0) return 0;
+
+    const currentMs = snapshotTime.getTime() - minTime.getTime();
+    const totalDays = Math.ceil(totalMs / (1000 * 60 * 60 * 24));
+    const currentDay = Math.floor(
+      currentMs / (1000 * 60 * 60 * 24)
+    );
     return Math.min(currentDay, totalDays);
   };
 
@@ -138,23 +125,35 @@ export default function ControlPanel({
 
   const handleDateChange = (value: number[]) => {
     if (!minTime) return;
-    const newDate = new Date(minTime.getTime() + value[0] * 24 * 60 * 60 * 1000);
-    newDate.setHours(snapshotTime.getHours(), snapshotTime.getMinutes(), 0, 0);
+    const newDate = new Date(
+      minTime.getTime() + value[0] * 24 * 60 * 60 * 1000
+    );
+    newDate.setHours(
+      snapshotTime.getHours(),
+      snapshotTime.getMinutes(),
+      0,
+      0
+    );
     onSnapshotTimeChange(newDate);
   };
 
   const handleTimeChange = (value: number[]) => {
+    if (!minTime) return;
+    const newDate = new Date(snapshotTime);
     const totalMinutes = value[0];
     const hours = Math.floor(totalMinutes / 60);
     const minutes = totalMinutes % 60;
-    const newDate = new Date(snapshotTime);
     newDate.setHours(hours, minutes, 0, 0);
     onSnapshotTimeChange(newDate);
   };
 
-  const totalDays = minTime && maxTime 
-    ? Math.ceil((maxTime.getTime() - minTime.getTime()) / (1000 * 60 * 60 * 24))
-    : 0;
+  const totalDays =
+    minTime && maxTime
+      ? Math.ceil(
+          (maxTime.getTime() - minTime.getTime()) /
+            (1000 * 60 * 60 * 24)
+        )
+      : 0;
 
   return (
     <Card className="w-96 h-full overflow-y-auto p-6 space-y-6 rounded-none border-r">
@@ -167,7 +166,7 @@ export default function ControlPanel({
 
       {/* Demand Upload */}
       <div>
-        <label className="text-sm font-medium mb-2 block">Demand Data</label>
+        <h3 className="text-sm font-medium mb-2">Demand Data</h3>
         <input
           ref={demandInputRef}
           type="file"
@@ -180,6 +179,7 @@ export default function ControlPanel({
             onClick={() => demandInputRef.current?.click()}
             disabled={isUploadingDemand}
             className="flex-1"
+            variant="outline"
           >
             <Upload className="mr-2 h-4 w-4" />
             {isUploadingDemand ? "Uploading..." : "Upload"}
@@ -196,13 +196,13 @@ export default function ControlPanel({
           )}
         </div>
         <p className="text-xs text-muted-foreground mt-2">
-          Demand events loaded: {demandCount}
+          Events loaded: {demandCount}
         </p>
       </div>
 
       {/* Supply Upload */}
       <div>
-        <label className="text-sm font-medium mb-2 block">Supply Data</label>
+        <h3 className="text-sm font-medium mb-2">Supply Data</h3>
         <input
           ref={supplyInputRef}
           type="file"
@@ -232,17 +232,17 @@ export default function ControlPanel({
           )}
         </div>
         <p className="text-xs text-muted-foreground mt-2">
-          Supply vehicles loaded: {supplyCount}
+          Vehicles loaded: {supplyCount}
         </p>
       </div>
 
       {/* Multiplier Upload */}
       <div>
-        <label className="text-sm font-medium mb-2 block">Multiplier Data</label>
+        <h3 className="text-sm font-medium mb-2">Multiplier Data</h3>
         <input
           ref={multiplierInputRef}
           type="file"
-          accept=".xlsx,.xls,.csv,.txt"
+          accept=".xlsx,.xls,.csv"
           onChange={handleMultiplierSelect}
           className="hidden"
         />
@@ -272,106 +272,116 @@ export default function ControlPanel({
         </p>
       </div>
 
+      {/* Normalization Toggle */}
+      <div>
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-medium">Normalization</h3>
+            <p className="text-xs text-muted-foreground">
+              Toggle log normalization for the demand/supply ratio
+            </p>
+          </div>
+          <Switch
+            checked={normalizationEnabled}
+            onCheckedChange={(checked) =>
+              onNormalizationEnabledChange(Boolean(checked))
+            }
+          />
+        </div>
+      </div>
+
       {/* Base Price Input */}
       <div>
-        <label className="text-sm font-medium mb-2 block">Base Price ($)</label>
-        <input
-          type="number"
-          value={basePrice || ""}
-          onChange={(e) => onBasePriceChange(parseFloat(e.target.value) || 0)}
-          placeholder="Enter base price"
-          min="0"
-          step="0.01"
-          className="w-full px-3 py-2 border border-input rounded-md bg-background text-sm"
-        />
+        <h3 className="text-sm font-medium mb-2">Base Price</h3>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground">$</span>
+          <input
+            type="number"
+            value={basePrice}
+            min={0}
+            step={0.01}
+            onChange={(e) => onBasePriceChange(Number(e.target.value))}
+            className="w-full bg-transparent border rounded-md px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"
+            placeholder="e.g. 10.00"
+          />
+        </div>
         <p className="text-xs text-muted-foreground mt-2">
-          Current: ${basePrice.toFixed(2)}
+          Used to calculate final price = basePrice × multiplier
         </p>
       </div>
 
       {/* Hexagon Resolution */}
       <div>
-        <div className="flex justify-between items-center mb-2">
-          <label className="text-sm font-medium">
-            Hexagon Resolution (H3 level)
-          </label>
-          <span className="text-sm font-medium">Level {hexagonResolution}</span>
-        </div>
-        <Slider
-          value={[hexagonResolution]}
-          onValueChange={(value) => onHexagonResolutionChange(value[0])}
-          min={5}
-          max={12}
-          step={1}
-          className="mb-2"
-        />
-        <p className="text-xs text-muted-foreground">
-          ~~{getResolutionLabel(hexagonResolution)} edge
-        </p>
-      </div>
-
-      {/* Timeframe Window */}
-      <div>
-        <label className="text-sm font-medium mb-2 block">
-          Timeframe Window (Demand)
-        </label>
+        <h3 className="text-sm font-medium mb-2">Hexagon Resolution</h3>
         <Select
-          value={timeframeMinutes.toString()}
-          onValueChange={(value) => onTimeframeChange(parseInt(value))}
+          value={String(hexagonResolution)}
+          onValueChange={(v) => onHexagonResolutionChange(Number(v))}
         >
-          <SelectTrigger>
-            <SelectValue />
+          <SelectTrigger className="w-full">
+            <SelectValue placeholder="Select resolution" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="15">t - 15 minutes</SelectItem>
-            <SelectItem value="30">t - 30 minutes</SelectItem>
-            <SelectItem value="60">t - 60 minutes</SelectItem>
-            <SelectItem value="90">t - 90 minutes</SelectItem>
-            <SelectItem value="120">t - 2 hours</SelectItem>
-            <SelectItem value="360">t - 6 hours</SelectItem>
-            <SelectItem value="720">t - 12 hours</SelectItem>
-            <SelectItem value="1440">t - 24 hours</SelectItem>
+            {resolutionOptions.map((opt) => (
+              <SelectItem key={opt.value} value={String(opt.value)}>
+                {opt.label}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
         <p className="text-xs text-muted-foreground mt-2">
-          Supply calculated at snapshot time only
+          Higher resolution = smaller hexagons
         </p>
       </div>
 
-      {/* Snapshot Time Controls */}
+      {/* Timeframe */}
+      <div>
+        <h3 className="text-sm font-medium mb-2">Demand Timeframe Window</h3>
+        <Select
+          value={String(timeframeMinutes)}
+          onValueChange={(v) => onTimeframeChange(Number(v))}
+        >
+          <SelectTrigger className="w-full">
+            <SelectValue placeholder="Select timeframe" />
+          </SelectTrigger>
+          <SelectContent>
+            {timeframeOptions.map((opt) => (
+              <SelectItem key={opt.value} value={String(opt.value)}>
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground mt-2">
+          Demand events within this window before snapshot time are counted
+        </p>
+      </div>
+
+      {/* Time Controls */}
       {minTime && maxTime && (
         <>
-          {/* Date Slider */}
           <div>
-            <div className="flex justify-between items-center mb-2">
-              <label className="text-sm font-medium">Snapshot Date</label>
-              <span className="text-sm font-medium">{formatDate(snapshotTime)}</span>
-            </div>
+            <h3 className="text-sm font-medium mb-2">Snapshot Date</h3>
             <Slider
-              value={[getDateValue(snapshotTime)]}
-              onValueChange={handleDateChange}
+              value={[getCurrentDayIndex()]}
               min={0}
-              max={totalDays}
+              max={Math.max(totalDays, 0)}
               step={1}
+              onValueChange={handleDateChange}
             />
             <div className="flex justify-between text-xs text-muted-foreground mt-1">
-              <span>{formatDate(minTime)}</span>
-              <span>{formatDate(maxTime)}</span>
+              <span>{minTime.toLocaleDateString()}</span>
+              <span>{maxTime.toLocaleDateString()}</span>
             </div>
           </div>
 
-          {/* Time Slider */}
           <div>
-            <div className="flex justify-between items-center mb-2">
-              <label className="text-sm font-medium">Snapshot Time</label>
-              <span className="text-sm font-medium">{formatTime(snapshotTime)}</span>
-            </div>
+            <h3 className="text-sm font-medium mb-2">Snapshot Time</h3>
             <Slider
               value={[getTimeValue(snapshotTime)]}
-              onValueChange={handleTimeChange}
               min={0}
               max={1439}
               step={1}
+              onValueChange={handleTimeChange}
             />
             <div className="flex justify-between text-xs text-muted-foreground mt-1">
               <span>12:00 AM</span>
