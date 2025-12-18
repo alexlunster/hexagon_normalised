@@ -120,7 +120,7 @@ export default function HexagonMap({
   // ✅ added: raw (non-normalized) ratio
   const computeRawRatio = useCallback((journeys: number, vehicles: number): number => {
     if (vehicles === 0) {
-      return journeys > 0 ? Infinity : 0;
+      return journeys > 0 ? 1 : 0;
     }
     return journeys / vehicles;
   }, []);
