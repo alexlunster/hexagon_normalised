@@ -22,10 +22,40 @@ interface MultiplierData {
   multiplier: number;
 }
 
+const parseExcelDate = (value: any): Date | null => {
+  if (value instanceof Date) return value;
+  if (typeof value === "number") {
+    // Excel date serial number
+    const utc_days = Math.floor(value - 25569);
+    const utc_value = utc_days * 86400;
+    const date_info = new Date(utc_value * 1000);
+
+    const fractional_day = value - Math.floor(value) + 0.0000001;
+    let total_seconds = Math.floor(86400 * fractional_day);
+
+    const seconds = total_seconds % 60;
+    total_seconds -= seconds;
+
+    const hours = Math.floor(total_seconds / (60 * 60));
+    const minutes = Math.floor(total_seconds / 60) % 60;
+
+    date_info.setHours(hours);
+    date_info.setMinutes(minutes);
+    date_info.setSeconds(seconds);
+
+    return date_info;
+  }
+  if (typeof value === "string") {
+    const d = new Date(value);
+    if (!isNaN(d.getTime())) return d;
+  }
+  return null;
+};
+
 export default function Dashboard() {
   const [hexagonResolution, setHexagonResolution] = useState(8);
   const [timeframeMinutes, setTimeframeMinutes] = useState(60);
-  const [snapshotTime, setSnapshotTime] = useState(new Date());
+  const [snapshotTime, setSnapshotTime] = useState<Date>(new Date());
   const [isUploadingDemand, setIsUploadingDemand] = useState(false);
   const [isUploadingSupply, setIsUploadingSupply] = useState(false);
   const [isUploadingMultiplier, setIsUploadingMultiplier] = useState(false);
@@ -33,19 +63,21 @@ export default function Dashboard() {
   const [supplyVehicles, setSupplyVehicles] = useState<SupplyData[]>([]);
   const [multiplierData, setMultiplierData] = useState<MultiplierData[]>([]);
   const [basePrice, setBasePrice] = useState<number>(0);
+  const [normalizationEnabled, setNormalizationEnabled] =
+    useState<boolean>(true);
 
   // Calculate min and max time from both demand and supply
   const { minTime, maxTime } = useMemo(() => {
     const times: number[] = [];
-    
+
     demandEvents.forEach((e) => times.push(e.timestamp.getTime()));
     supplyVehicles.forEach((v) => {
       times.push(v.startTime.getTime());
       times.push(v.endTime.getTime());
     });
-    
+
     if (times.length === 0) return { minTime: null, maxTime: null };
-    
+
     return {
       minTime: new Date(Math.min(...times)),
       maxTime: new Date(Math.max(...times)),
@@ -58,72 +90,55 @@ export default function Dashboard() {
     try {
       const data = await file.arrayBuffer();
       const workbook = XLSX.read(data);
+
       const sheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[sheetName];
-      const jsonData = XLSX.utils.sheet_to_json(worksheet);
 
-      // Parse demand events from CSV
+      const rows = XLSX.utils.sheet_to_json<any>(worksheet, { defval: "" });
+
+      // Try to detect columns
       const parsedEvents: EventData[] = [];
-      for (const row of jsonData as any[]) {
-        const keys = Object.keys(row);
-        
-        let timeValue, latValue, lngValue;
-        
-        if (keys.length === 3 && keys[0] === "timestamp" && keys[1] === "latitude" && keys[2] === "longitude") {
-          timeValue = row.timestamp;
-          latValue = row.latitude;
-          lngValue = row.longitude;
-        } else if (keys.length >= 3) {
-          const timeKey = keys.find((k) =>
-            k.toLowerCase().includes("time") || k.toLowerCase().includes("date")
-          );
-          const latKey = keys.find((k) =>
-            k.toLowerCase().includes("lat")
-          );
-          const lngKey = keys.find((k) =>
-            k.toLowerCase().includes("lng") || k.toLowerCase().includes("lon")
-          );
-          
-          if (timeKey && latKey && lngKey) {
-            timeValue = row[timeKey];
-            latValue = row[latKey];
-            lngValue = row[lngKey];
-          } else {
-            timeValue = row[keys[0]];
-            latValue = row[keys[1]];
-            lngValue = row[keys[2]];
-          }
-        } else {
-          continue;
-        }
 
-        let timestamp: Date;
-        if (typeof timeValue === 'string') {
-          timestamp = new Date(timeValue);
-          
-          if (isNaN(timestamp.getTime())) {
-            const match = timeValue.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(\d{1,2}):(\d{2})/);
-            if (match) {
-              const [, month, day, year, hour, minute] = match;
-              const fullYear = parseInt(year) < 100 ? 2000 + parseInt(year) : parseInt(year);
-              timestamp = new Date(fullYear, parseInt(month) - 1, parseInt(day), parseInt(hour), parseInt(minute));
-            } else {
-              continue;
-            }
-          }
-        } else if (typeof timeValue === 'number') {
-          timestamp = new Date((timeValue - 25569) * 86400 * 1000);
-        } else {
-          timestamp = new Date(timeValue);
-        }
+      for (const row of rows) {
+        const timestampValue =
+          row.timestamp ??
+          row.Timestamp ??
+          row.time ??
+          row.Time ??
+          row.datetime ??
+          row.DateTime ??
+          row.date ??
+          row.Date ??
+          row.ts;
 
-        const latitude = parseFloat(latValue);
-        const longitude = parseFloat(lngValue);
+        const latValue =
+          row.latitude ??
+          row.Latitude ??
+          row.lat ??
+          row.Lat ??
+          row.y ??
+          row.Y;
+
+        const lngValue =
+          row.longitude ??
+          row.Longitude ??
+          row.lon ??
+          row.Lon ??
+          row.lng ??
+          row.Lng ??
+          row.x ??
+          row.X;
+
+        const timestamp = parseExcelDate(timestampValue);
+        const latitude = Number(latValue);
+        const longitude = Number(lngValue);
 
         if (
-          !isNaN(timestamp.getTime()) &&
+          timestamp &&
           !isNaN(latitude) &&
-          !isNaN(longitude)
+          !isNaN(longitude) &&
+          latitude !== 0 &&
+          longitude !== 0
         ) {
           parsedEvents.push({ timestamp, latitude, longitude });
         }
@@ -136,7 +151,7 @@ export default function Dashboard() {
       }
 
       setDemandEvents(parsedEvents);
-      
+
       const times = parsedEvents.map((e) => e.timestamp.getTime());
       const avgTime = new Date(times.reduce((a, b) => a + b, 0) / times.length);
       setSnapshotTime(avgTime);
@@ -150,66 +165,142 @@ export default function Dashboard() {
     }
   };
 
-  const handleDeleteDemand = () => {
-    setDemandEvents([]);
-    toast.success("Demand data cleared");
-  };
+  const handleSupplyUpload = async (file: File) => {
+    setIsUploadingSupply(true);
 
-  const handleDeleteSupply = () => {
-    setSupplyVehicles([]);
-    toast.success("Supply data cleared");
+    try {
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data);
+
+      const sheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[sheetName];
+
+      const rows = XLSX.utils.sheet_to_json<any>(worksheet, { defval: "" });
+
+      const parsedSupply: SupplyData[] = [];
+
+      for (const row of rows) {
+        const startValue =
+          row.startTime ??
+          row.StartTime ??
+          row.start ??
+          row.Start ??
+          row.start_time ??
+          row.Start_Time ??
+          row.begin ??
+          row.Begin;
+
+        const endValue =
+          row.endTime ??
+          row.EndTime ??
+          row.end ??
+          row.End ??
+          row.end_time ??
+          row.End_Time ??
+          row.finish ??
+          row.Finish;
+
+        const latValue =
+          row.latitude ??
+          row.Latitude ??
+          row.lat ??
+          row.Lat ??
+          row.y ??
+          row.Y;
+
+        const lngValue =
+          row.longitude ??
+          row.Longitude ??
+          row.lon ??
+          row.Lon ??
+          row.lng ??
+          row.Lng ??
+          row.x ??
+          row.X;
+
+        const startTime = parseExcelDate(startValue);
+        const endTime = parseExcelDate(endValue);
+        const latitude = Number(latValue);
+        const longitude = Number(lngValue);
+
+        if (
+          startTime &&
+          endTime &&
+          startTime <= endTime &&
+          !isNaN(latitude) &&
+          !isNaN(longitude) &&
+          latitude !== 0 &&
+          longitude !== 0
+        ) {
+          parsedSupply.push({ startTime, endTime, latitude, longitude });
+        }
+      }
+
+      if (parsedSupply.length === 0) {
+        toast.error("No valid supply rows found in file");
+        setIsUploadingSupply(false);
+        return;
+      }
+
+      setSupplyVehicles(parsedSupply);
+      toast.success(`Loaded ${parsedSupply.length} supply rows`);
+    } catch (error) {
+      console.error("Error uploading supply file:", error);
+      toast.error("Failed to upload supply file");
+    } finally {
+      setIsUploadingSupply(false);
+    }
   };
 
   const handleMultiplierUpload = async (file: File) => {
     setIsUploadingMultiplier(true);
 
     try {
-      let parsedMultipliers: MultiplierData[] = [];
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data);
 
-      if (file.name.endsWith('.txt')) {
-        // Parse .txt file as JSON
-        const text = await file.text();
-        const jsonData = JSON.parse(text);
-        
-        // Handle both array and object formats
-        const dataArray = Array.isArray(jsonData) ? jsonData : [jsonData];
-        
-        for (const row of dataArray) {
-          const minRatio = parseFloat(row.minRatio);
-          const multiplier = parseFloat(row.multiplier);
+      const sheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[sheetName];
 
-          if (!isNaN(minRatio) && !isNaN(multiplier)) {
-            parsedMultipliers.push({ minRatio, multiplier });
-          }
-        }
-      } else {
-        // Parse Excel file
-        const data = await file.arrayBuffer();
-        const workbook = XLSX.read(data);
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet);
+      const rows = XLSX.utils.sheet_to_json<any>(worksheet, { defval: "" });
 
-        for (const row of jsonData as any[]) {
-          const minRatio = parseFloat(row.minRatio);
-          const multiplier = parseFloat(row.multiplier);
+      const parsedMultipliers: MultiplierData[] = [];
 
-          if (!isNaN(minRatio) && !isNaN(multiplier)) {
-            parsedMultipliers.push({ minRatio, multiplier });
-          }
+      for (const row of rows) {
+        const minRatioValue =
+          row.minRatio ??
+          row.MinRatio ??
+          row.min_ratio ??
+          row.Min_Ratio ??
+          row.ratio ??
+          row.Ratio ??
+          row.threshold ??
+          row.Threshold;
+
+        const multiplierValue =
+          row.multiplier ??
+          row.Multiplier ??
+          row.mult ??
+          row.Mult ??
+          row.factor ??
+          row.Factor;
+
+        const minRatio = Number(minRatioValue);
+        const multiplier = Number(multiplierValue);
+
+        if (!isNaN(minRatio) && !isNaN(multiplier)) {
+          parsedMultipliers.push({ minRatio, multiplier });
         }
       }
 
       if (parsedMultipliers.length === 0) {
-        toast.error("No valid multiplier data found in file");
+        toast.error("No valid multiplier rows found in file");
         setIsUploadingMultiplier(false);
         return;
       }
 
-      // Sort by minRatio in descending order for proper lookup
-      parsedMultipliers.sort((a, b) => b.minRatio - a.minRatio);
       setMultiplierData(parsedMultipliers);
-      toast.success(`Loaded ${parsedMultipliers.length} multiplier entries`);
+      toast.success(`Loaded ${parsedMultipliers.length} multiplier rows`);
     } catch (error) {
       console.error("Error uploading multiplier file:", error);
       toast.error("Failed to upload multiplier file");
@@ -218,103 +309,19 @@ export default function Dashboard() {
     }
   };
 
-  const handleDeleteMultiplier = () => {
-    setMultiplierData([]);
-    toast.success("Multiplier data cleared");
+  const handleDeleteDemand = () => {
+    setDemandEvents([]);
+    toast.success("Demand data removed");
   };
 
-  const handleSupplyUpload = async (file: File) => {
-    setIsUploadingSupply(true);
+  const handleDeleteSupply = () => {
+    setSupplyVehicles([]);
+    toast.success("Supply data removed");
+  };
 
-    try {
-      const data = await file.arrayBuffer();
-      const workbook = XLSX.read(data);
-      const sheetName = workbook.SheetNames[0];
-      const worksheet = workbook.Sheets[sheetName];
-      const jsonData = XLSX.utils.sheet_to_json(worksheet);
-
-      // Parse supply vehicles from CSV (start_time, end_time, lat, lng)
-      const parsedSupply: SupplyData[] = [];
-      for (const row of jsonData as any[]) {
-        const keys = Object.keys(row);
-        
-        if (keys.length < 4) continue;
-        
-        let startValue, endValue, latValue, lngValue;
-        
-        // Try to find columns by name or use positional
-        const startKey = keys.find((k) => k.toLowerCase().includes("start"));
-        const endKey = keys.find((k) => k.toLowerCase().includes("end"));
-        const latKey = keys.find((k) => k.toLowerCase().includes("lat"));
-        const lngKey = keys.find((k) => k.toLowerCase().includes("lng") || k.toLowerCase().includes("lon"));
-        
-        if (startKey && endKey && latKey && lngKey) {
-          startValue = row[startKey];
-          endValue = row[endKey];
-          latValue = row[latKey];
-          lngValue = row[lngKey];
-        } else {
-          // Assume positional: start_time, end_time, lat, lng
-          startValue = row[keys[0]];
-          endValue = row[keys[1]];
-          latValue = row[keys[2]];
-          lngValue = row[keys[3]];
-        }
-
-        // Parse timestamps
-        const parseTime = (value: any): Date | null => {
-          if (!value) return null;
-          
-          if (typeof value === 'string') {
-            let date = new Date(value);
-            
-            if (isNaN(date.getTime())) {
-              const match = value.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(\d{1,2}):(\d{2})/);
-              if (match) {
-                const [, month, day, year, hour, minute] = match;
-                const fullYear = parseInt(year) < 100 ? 2000 + parseInt(year) : parseInt(year);
-                date = new Date(fullYear, parseInt(month) - 1, parseInt(day), parseInt(hour), parseInt(minute));
-              } else {
-                return null;
-              }
-            }
-            return date;
-          } else if (typeof value === 'number') {
-            return new Date((value - 25569) * 86400 * 1000);
-          }
-          return new Date(value);
-        };
-
-        const startTime = parseTime(startValue);
-        const endTime = parseTime(endValue);
-        const latitude = parseFloat(latValue);
-        const longitude = parseFloat(lngValue);
-
-        if (
-          startTime && endTime &&
-          !isNaN(startTime.getTime()) &&
-          !isNaN(endTime.getTime()) &&
-          !isNaN(latitude) &&
-          !isNaN(longitude)
-        ) {
-          parsedSupply.push({ startTime, endTime, latitude, longitude });
-        }
-      }
-
-      if (parsedSupply.length === 0) {
-        toast.error("No valid supply vehicles found in file");
-        setIsUploadingSupply(false);
-        return;
-      }
-
-      setSupplyVehicles(parsedSupply);
-      toast.success(`Loaded ${parsedSupply.length} supply vehicles`);
-    } catch (error) {
-      console.error("Error uploading supply file:", error);
-      toast.error("Failed to upload supply file");
-    } finally {
-      setIsUploadingSupply(false);
-    }
+  const handleDeleteMultiplier = () => {
+    setMultiplierData([]);
+    toast.success("Multiplier data removed");
   };
 
   return (
@@ -326,20 +333,22 @@ export default function Dashboard() {
         onTimeframeChange={setTimeframeMinutes}
         snapshotTime={snapshotTime}
         onSnapshotTimeChange={setSnapshotTime}
+        normalizationEnabled={normalizationEnabled}
+        onNormalizationEnabledChange={setNormalizationEnabled}
         onDemandUpload={handleDemandUpload}
         onSupplyUpload={handleSupplyUpload}
+        onMultiplierUpload={handleMultiplierUpload}
         onDeleteDemand={handleDeleteDemand}
         onDeleteSupply={handleDeleteSupply}
-        onMultiplierUpload={handleMultiplierUpload}
         onDeleteMultiplier={handleDeleteMultiplier}
         basePrice={basePrice}
         onBasePriceChange={setBasePrice}
-        isUploadingDemand={isUploadingDemand}
-        isUploadingSupply={isUploadingSupply}
-        isUploadingMultiplier={isUploadingMultiplier}
         demandCount={demandEvents.length}
         supplyCount={supplyVehicles.length}
         multiplierCount={multiplierData.length}
+        isUploadingDemand={isUploadingDemand}
+        isUploadingSupply={isUploadingSupply}
+        isUploadingMultiplier={isUploadingMultiplier}
         minTime={minTime}
         maxTime={maxTime}
       />
@@ -348,6 +357,7 @@ export default function Dashboard() {
         supplyVehicles={supplyVehicles}
         multiplierData={multiplierData}
         basePrice={basePrice}
+        normalizationEnabled={normalizationEnabled}
         hexagonResolution={hexagonResolution}
         timeframeMinutes={timeframeMinutes}
         snapshotTime={snapshotTime}
