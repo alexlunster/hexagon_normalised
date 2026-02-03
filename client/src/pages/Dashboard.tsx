@@ -51,9 +51,24 @@ export default function Dashboard() {
 
     if (times.length === 0) return { minTime: null, maxTime: null };
 
+    // Avoid using Math.min(...times) / Math.max(...times) on large arrays.
+    // Spreading tens of thousands of values can throw:
+    // RangeError: Maximum call stack size exceeded.
+    let min = Infinity;
+    let max = -Infinity;
+    for (const t of times) {
+      if (!Number.isFinite(t)) continue;
+      if (t < min) min = t;
+      if (t > max) max = t;
+    }
+
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+      return { minTime: null, maxTime: null };
+    }
+
     return {
-      minTime: new Date(Math.min(...times)),
-      maxTime: new Date(Math.max(...times)),
+      minTime: new Date(min),
+      maxTime: new Date(max),
     };
   }, [demandEvents, supplyVehicles]);
 
@@ -237,7 +252,7 @@ export default function Dashboard() {
     toast.success("Multiplier data cleared");
   };
 
-  // ✅ IMPORTANT: supply upload logic stays exactly as your original
+  // ✅ supply upload logic unchanged
   const handleSupplyUpload = async (file: File) => {
     setIsUploadingSupply(true);
 
@@ -369,7 +384,6 @@ export default function Dashboard() {
         multiplierCount={multiplierData.length}
         minTime={minTime}
         maxTime={maxTime}
-        // ✅ added
         normalizationEnabled={normalizationEnabled}
         onNormalizationEnabledChange={setNormalizationEnabled}
       />
