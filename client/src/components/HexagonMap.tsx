@@ -105,16 +105,14 @@ export default function HexagonMap({
     });
   }, [supplyVehicles, snapshotTime]);
 
-  // Compute log ratio with normalization
-  const computeLogRatio = useCallback((journeys: number, vehicles: number): number => {
-    if (vehicles === 0) {
-      return journeys > 0 ? 1 : 0.0;
-    }
-    
-    const logJourneys = Math.log(journeys + 1); // Add 1 to avoid log(0)
-    const logVehicles = Math.log(vehicles + 1);
-    
-    return logJourneys / logVehicles;
+  // Compute z-score normalized ratio (computed across all active hexagons in the current snapshot)
+  // NOTE: We keep the toggle + downstream pipeline unchanged by applying z-score to the raw ratio
+  // and leaving the rest of the rendering / multiplier logic as-is.
+  const computeZScore = useCallback((value: number, mean: number, stdDev: number): number => {
+    if (!Number.isFinite(value)) return 0;
+    if (!Number.isFinite(mean)) return 0;
+    if (!Number.isFinite(stdDev) || stdDev === 0) return 0;
+    return (value - mean) / stdDev;
   }, []);
 
   // ✅ added: raw (non-normalized) ratio
@@ -164,6 +162,36 @@ export default function HexagonMap({
 
     // Calculate ratios for hexagons with data
     const hexMap = new Map<string, { hexId: string; ratio: number; center: [number, number]; demand: number; supply: number; finalPrice: number }>();
+
+    // Precompute mean/stdDev of the raw ratio across all active hexagons (when both files are present)
+    // so that the "normalization" toggle can switch from raw ratio -> z-score.
+    const hasBothData = demandMap.size > 0 && supplyMap.size > 0;
+    const rawRatioMap = new Map<string, number>();
+    let ratioMean = 0;
+    let ratioStdDev = 0;
+
+    if (hasBothData) {
+      // Welford's algorithm for numerically stable streaming mean/std
+      let n = 0;
+      let mean = 0;
+      let m2 = 0;
+
+      allHexIds.forEach((hexId) => {
+        const demand = demandMap.get(hexId) || 0;
+        const supply = supplyMap.get(hexId) || 0;
+        const raw = computeRawRatio(demand, supply);
+        rawRatioMap.set(hexId, raw);
+
+        n += 1;
+        const delta = raw - mean;
+        mean += delta / n;
+        const delta2 = raw - mean;
+        m2 += delta * delta2;
+      });
+
+      ratioMean = mean;
+      ratioStdDev = n > 1 ? Math.sqrt(m2 / (n - 1)) : 0;
+    }
     
     allHexIds.forEach((hexId) => {
       const demand = demandMap.get(hexId) || 0;
@@ -172,15 +200,14 @@ export default function HexagonMap({
       // Calculate ratio based on available data
       let ratio: number;
       let finalPrice: number = 0;
-      const hasBothData = demandMap.size > 0 && supplyMap.size > 0;
       const hasDemandOnly = demandMap.size > 0 && supplyMap.size === 0;
       const hasMultiplier = multiplierData.length > 0;
       
       if (hasBothData) {
         // ✅ changed: choose normalized vs raw based on toggle
-        ratio = normalizationEnabled
-          ? computeLogRatio(demand, supply)
-          : computeRawRatio(demand, supply);
+        // Normalized = z-score of the raw ratio across all active hexagons.
+        const raw = rawRatioMap.get(hexId) ?? computeRawRatio(demand, supply);
+        ratio = normalizationEnabled ? computeZScore(raw, ratioMean, ratioStdDev) : raw;
         
         // If multiplier and base price are available, calculate final price
         if (hasMultiplier && basePrice > 0) {
@@ -245,8 +272,8 @@ export default function HexagonMap({
     hexagonResolution,
     multiplierData,
     basePrice,
-    computeLogRatio,
     computeRawRatio,
+    computeZScore,
     normalizationEnabled, // ✅ added
   ]);
 
@@ -373,82 +400,4 @@ export default function HexagonMap({
           displayValue = formatRatio(hex.ratio);
         }
         
-        newPositions.push({
-          x,
-          y,
-          ratio: hex.ratio,
-          displayValue,
-        });
-      }
-    });
-
-    // Only update if positions changed significantly
-    const positionsKey = newPositions.map(p => `${Math.round(p.x)},${Math.round(p.y)}`).join('|');
-    if (positionsKey !== prevPositionsRef.current) {
-      setLabelPositions(newPositions);
-      prevPositionsRef.current = positionsKey;
-    }
-  }, [activeHexagons, demandEvents.length, supplyVehicles.length, multiplierData.length, basePrice]);
-
-  const handleAfterRender = useCallback(() => {
-    const viewport = new WebMercatorViewport({
-      ...viewState,
-      width: containerSize.width,
-      height: containerSize.height,
-    });
-    updateLabels(viewport);
-  }, [viewState, containerSize, updateLabels]);
-
-  const formatRatio = (ratio: number) => {
-    if (ratio === Infinity) return "∞";
-    if (ratio === 0) return "0";
-    if (ratio < 0.01) return "<0.01";
-    if (ratio < 1) return ratio.toFixed(2);
-    if (ratio < 10) return ratio.toFixed(1);
-    return Math.round(ratio).toString();
-  };
-
-  return (
-    <div ref={containerRef} className="relative flex-1 h-full">
-      <DeckGL
-        viewState={viewState}
-        onViewStateChange={({ viewState: newViewState }) => setViewState(newViewState as MapViewState)}
-        controller={true}
-        layers={layers}
-        onAfterRender={handleAfterRender}
-        style={{ position: 'relative' }}
-      />
-      
-      {/* Label overlay */}
-      <div className="absolute inset-0 pointer-events-none">
-        {labelPositions.map((pos, i) => (
-          <div
-            key={i}
-            className="absolute"
-            style={{
-              left: `${pos.x}px`,
-              top: `${pos.y}px`,
-              transform: 'translate(-50%, -50%)',
-              fontSize: `${currentFontSize}px`,
-              fontWeight: 'bold',
-              color: 'white',
-              textShadow: '0 0 4px rgba(0,0,0,0.8), 0 0 8px rgba(0,0,0,0.6)',
-              backgroundColor: 'rgba(0,0,0,0.5)',
-              padding: '2px 6px',
-              borderRadius: '4px',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {pos.displayValue}
-          </div>
-        ))}
-      </div>
-
-      {activeHexagons.length === 0 && (
-        <div className="absolute inset-0 flex items-center justify-center bg-gray-800 text-gray-400">
-          Upload demand and supply files to get started
-        </div>
-      )}
-    </div>
-  );
-}
+        newPositions.push
