@@ -40,7 +40,7 @@ interface HexagonMapProps {
   snapshotTime: Date;
   timeframeMinutes: number;
   hexagonResolution: number;
-  normalizationEnabled: boolean; // ✅ added
+  normalizationEnabled: boolean;
 }
 
 interface LabelPosition {
@@ -50,6 +50,16 @@ interface LabelPosition {
   displayValue: string;
 }
 
+type HoverInfoState = {
+  x: number;
+  y: number;
+  hexId: string;
+  demand: number;
+  supply: number;
+  ratio: number;
+  finalPrice: number;
+} | null;
+
 export default function HexagonMap({
   demandEvents,
   supplyVehicles,
@@ -58,13 +68,16 @@ export default function HexagonMap({
   snapshotTime,
   timeframeMinutes,
   hexagonResolution,
-  normalizationEnabled, // ✅ added
+  normalizationEnabled,
 }: HexagonMapProps) {
   const [labelPositions, setLabelPositions] = useState<LabelPosition[]>([]);
-  const prevPositionsRef = useRef<string>('');
+  const prevPositionsRef = useRef<string>("");
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 800, height: 600 });
-  
+
+  // ✅ added
+  const [hoverInfo, setHoverInfo] = useState<HoverInfoState>(null);
+
   const [viewState, setViewState] = useState<MapViewState>({
     longitude: -74.006,
     latitude: 40.7128,
@@ -83,10 +96,10 @@ export default function HexagonMap({
         });
       }
     };
-    
+
     updateSize();
-    window.addEventListener('resize', updateSize);
-    return () => window.removeEventListener('resize', updateSize);
+    window.addEventListener("resize", updateSize);
+    return () => window.removeEventListener("resize", updateSize);
   }, []);
 
   // Filter demand events based on snapshot time and timeframe window
@@ -105,9 +118,6 @@ export default function HexagonMap({
     });
   }, [supplyVehicles, snapshotTime]);
 
-  // Compute z-score normalized ratio (computed across all active hexagons in the current snapshot)
-  // NOTE: We keep the toggle + downstream pipeline unchanged by applying z-score to the raw ratio
-  // and leaving the rest of the rendering / multiplier logic as-is.
   const computeZScore = useCallback((value: number, mean: number, stdDev: number): number => {
     if (!Number.isFinite(value)) return 0;
     if (!Number.isFinite(mean)) return 0;
@@ -115,7 +125,6 @@ export default function HexagonMap({
     return (value - mean) / stdDev;
   }, []);
 
-  // ✅ added: raw (non-normalized) ratio
   const computeRawRatio = useCallback((journeys: number, vehicles: number): number => {
     if (vehicles === 0) {
       return journeys > 0 ? 1 : 0;
@@ -126,16 +135,16 @@ export default function HexagonMap({
   // Get multiplier from ratio
   const getMultiplier = (ratio: number): number => {
     if (multiplierData.length === 0) return 1;
-    
+
     // Sort by minRatio descending (should already be sorted, but ensure it)
     const sorted = [...multiplierData].sort((a, b) => b.minRatio - a.minRatio);
-    
+
     for (const entry of sorted) {
       if (ratio >= entry.minRatio) {
         return entry.multiplier;
       }
     }
-    
+
     // If ratio is below all thresholds, return the last (lowest) multiplier
     return sorted[sorted.length - 1]?.multiplier || 1;
   };
@@ -160,18 +169,19 @@ export default function HexagonMap({
       allHexIds.add(hexId);
     });
 
-    // Calculate ratios for hexagons with data
-    const hexMap = new Map<string, { hexId: string; ratio: number; center: [number, number]; demand: number; supply: number; finalPrice: number }>();
+    const hexMap = new Map<
+      string,
+      { hexId: string; ratio: number; center: [number, number]; demand: number; supply: number; finalPrice: number }
+    >();
 
-    // Precompute mean/stdDev of the raw ratio across all active hexagons (when both files are present)
-    // so that the "normalization" toggle can switch from raw ratio -> z-score.
+    // Precompute mean/stdDev of the raw ratio across all active hexagons
     const hasBothData = demandMap.size > 0 && supplyMap.size > 0;
     const rawRatioMap = new Map<string, number>();
     let ratioMean = 0;
     let ratioStdDev = 0;
 
     if (hasBothData) {
-      // Welford's algorithm for numerically stable streaming mean/std
+      // Welford's algorithm
       let n = 0;
       let mean = 0;
       let m2 = 0;
@@ -192,30 +202,25 @@ export default function HexagonMap({
       ratioMean = mean;
       ratioStdDev = n > 1 ? Math.sqrt(m2 / (n - 1)) : 0;
     }
-    
+
     allHexIds.forEach((hexId) => {
       const demand = demandMap.get(hexId) || 0;
       const supply = supplyMap.get(hexId) || 0;
-      
-      // Calculate ratio based on available data
+
       let ratio: number;
-      let finalPrice: number = 0;
+      let finalPrice = 0;
       const hasDemandOnly = demandMap.size > 0 && supplyMap.size === 0;
       const hasMultiplier = multiplierData.length > 0;
-      
+
       if (hasBothData) {
-        // ✅ changed: choose normalized vs raw based on toggle
-        // Normalized = z-score of the raw ratio across all active hexagons.
         const raw = rawRatioMap.get(hexId) ?? computeRawRatio(demand, supply);
         ratio = normalizationEnabled ? computeZScore(raw, ratioMean, ratioStdDev) : raw;
-        
-        // If multiplier and base price are available, calculate final price
+
         if (hasMultiplier && basePrice > 0) {
           const multiplier = getMultiplier(ratio);
           finalPrice = multiplier * basePrice;
         }
       } else if (hasDemandOnly) {
-        // Show sum of demand events when only demand file is uploaded
         ratio = demand;
       } else {
         ratio = 0;
@@ -244,8 +249,8 @@ export default function HexagonMap({
             inactiveSet.add(neighborId);
           }
         });
-      } catch (e) {
-        // Skip if gridDisk fails
+      } catch {
+        // ignore
       }
     });
 
@@ -255,7 +260,7 @@ export default function HexagonMap({
       return {
         hexId,
         ratio: 0,
-        center: [lng, lat],
+        center: [lng, lat] as [number, number],
         demand: 0,
         supply: 0,
         finalPrice: 0,
@@ -263,8 +268,6 @@ export default function HexagonMap({
     });
 
     const active = Array.from(hexMap.values());
-    console.log('Created', active.length, 'active hexagons from', filteredDemand.length, 'demand and', availableSupply.length, 'supply');
-    
     return { activeHexagons: active, inactiveHexagons: inactive };
   }, [
     filteredDemand,
@@ -274,20 +277,20 @@ export default function HexagonMap({
     basePrice,
     computeRawRatio,
     computeZScore,
-    normalizationEnabled, // ✅ added
+    normalizationEnabled,
   ]);
 
   // Auto-center map on first data load
   useEffect(() => {
     if ((filteredDemand.length > 0 || availableSupply.length > 0) && viewState.zoom === 11) {
       const allPoints = [
-        ...filteredDemand.map(e => ({ lat: e.latitude, lng: e.longitude })),
-        ...availableSupply.map(v => ({ lat: v.latitude, lng: v.longitude })),
+        ...filteredDemand.map((e) => ({ lat: e.latitude, lng: e.longitude })),
+        ...availableSupply.map((v) => ({ lat: v.latitude, lng: v.longitude })),
       ];
-      
+
       if (allPoints.length > 0) {
-        const lats = allPoints.map(p => p.lat);
-        const lngs = allPoints.map(p => p.lng);
+        const lats = allPoints.map((p) => p.lat);
+        const lngs = allPoints.map((p) => p.lng);
         const avgLat = lats.reduce((a, b) => a + b, 0) / lats.length;
         const avgLng = lngs.reduce((a, b) => a + b, 0) / lngs.length;
         setViewState((prev) => ({
@@ -298,6 +301,7 @@ export default function HexagonMap({
         }));
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filteredDemand.length, availableSupply.length]);
 
   // Calculate dynamic font size based on zoom level
@@ -306,7 +310,7 @@ export default function HexagonMap({
     const baseFontSize = 28;
     const minFontSize = 8;
     const maxFontSize = 28;
-    
+
     const scale = Math.pow(2, (zoom - baseZoom) * 0.5);
     const fontSize = baseFontSize * scale;
     return Math.max(minFontSize, Math.min(maxFontSize, fontSize));
@@ -316,13 +320,13 @@ export default function HexagonMap({
 
   // Create layers
   const layers = useMemo(() => {
-    const allLayers = [];
+    const allLayers: any[] = [];
 
     // Add base map tiles
     allLayers.push(
       new TileLayer({
-        id: 'tile-layer',
-        data: 'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+        id: "tile-layer",
+        data: "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
         minZoom: 0,
         maxZoom: 19,
         tileSize: 256,
@@ -341,7 +345,7 @@ export default function HexagonMap({
     if (inactiveHexagons.length > 0) {
       allLayers.push(
         new H3HexagonLayer({
-          id: 'inactive-hexagon-layer',
+          id: "inactive-hexagon-layer",
           data: inactiveHexagons,
           pickable: false,
           wireframe: true,
@@ -359,9 +363,11 @@ export default function HexagonMap({
     if (activeHexagons.length > 0) {
       allLayers.push(
         new H3HexagonLayer({
-          id: 'active-hexagon-layer',
+          id: "active-hexagon-layer",
           data: activeHexagons,
           pickable: true,
+          autoHighlight: true, // ✅ makes hover obvious
+          highlightColor: [125, 211, 252, 160], // light blue highlight
           wireframe: true,
           filled: false,
           extruded: false,
@@ -376,46 +382,49 @@ export default function HexagonMap({
     return allLayers;
   }, [activeHexagons, inactiveHexagons]);
 
+  const formatRatio = (ratio: number) => {
+    if (ratio === Infinity) return "∞";
+    if (ratio === 0) return "0";
+    if (ratio < 0.01 && ratio > 0) return "<0.01";
+    if (ratio > -0.01 && ratio < 0) return ">-0.01";
+    if (Math.abs(ratio) < 1) return ratio.toFixed(2);
+    if (Math.abs(ratio) < 10) return ratio.toFixed(1);
+    return Math.round(ratio).toString();
+  };
+
   // Update label positions when viewport changes
-  const updateLabels = useCallback((viewport: WebMercatorViewport) => {
-    if (!viewport || activeHexagons.length === 0) return;
+  const updateLabels = useCallback(
+    (viewport: WebMercatorViewport) => {
+      if (!viewport || activeHexagons.length === 0) return;
 
-    const newPositions: LabelPosition[] = [];
-    const hasBothData = demandEvents.length > 0 && supplyVehicles.length > 0;
-    const hasMultiplier = multiplierData.length > 0;
-    const showPrice = hasBothData && hasMultiplier && basePrice > 0;
+      const newPositions: LabelPosition[] = [];
+      const hasBothData = demandEvents.length > 0 && supplyVehicles.length > 0;
+      const hasMultiplier = multiplierData.length > 0;
+      const showPrice = hasBothData && hasMultiplier && basePrice > 0;
 
-    activeHexagons.forEach((hex) => {
-      const [x, y] = viewport.project([hex.center[0], hex.center[1]]);
-      
-      // Only show labels for hexagons visible in viewport
-      if (x >= 0 && x <= viewport.width && y >= 0 && y <= viewport.height) {
-        let displayValue: string;
-        
-        if (showPrice) {
-          // Show final price
-          displayValue = `$${hex.finalPrice.toFixed(2)}`;
-        } else {
-          // Show ratio or sum
-          displayValue = formatRatio(hex.ratio);
+      activeHexagons.forEach((hex) => {
+        const [x, y] = viewport.project([hex.center[0], hex.center[1]]);
+
+        // Only show labels for hexagons visible in viewport
+        if (x >= 0 && x <= viewport.width && y >= 0 && y <= viewport.height) {
+          const displayValue = showPrice ? `$${hex.finalPrice.toFixed(2)}` : formatRatio(hex.ratio);
+          newPositions.push({
+            x,
+            y,
+            ratio: hex.ratio,
+            displayValue,
+          });
         }
-        
-        newPositions.push({
-          x,
-          y,
-          ratio: hex.ratio,
-          displayValue,
-        });
-      }
-    });
+      });
 
-    // Only update if positions changed significantly
-    const positionsKey = newPositions.map(p => `${Math.round(p.x)},${Math.round(p.y)}`).join('|');
-    if (positionsKey !== prevPositionsRef.current) {
-      setLabelPositions(newPositions);
-      prevPositionsRef.current = positionsKey;
-    }
-  }, [activeHexagons, demandEvents.length, supplyVehicles.length, multiplierData.length, basePrice]);
+      const positionsKey = newPositions.map((p) => `${Math.round(p.x)},${Math.round(p.y)}`).join("|");
+      if (positionsKey !== prevPositionsRef.current) {
+        setLabelPositions(newPositions);
+        prevPositionsRef.current = positionsKey;
+      }
+    },
+    [activeHexagons, demandEvents.length, supplyVehicles.length, multiplierData.length, basePrice]
+  );
 
   const handleAfterRender = useCallback(() => {
     const viewport = new WebMercatorViewport({
@@ -426,14 +435,33 @@ export default function HexagonMap({
     updateLabels(viewport);
   }, [viewState, containerSize, updateLabels]);
 
-  const formatRatio = (ratio: number) => {
-    if (ratio === Infinity) return "∞";
-    if (ratio === 0) return "0";
-    if (ratio < 0.01) return "<0.01";
-    if (ratio < 1) return ratio.toFixed(2);
-    if (ratio < 10) return ratio.toFixed(1);
-    return Math.round(ratio).toString();
-  };
+  // ✅ added: hover handler to show demand/supply tooltip
+  const handleHover = useCallback((info: any) => {
+    if (!info || !info.object) {
+      setHoverInfo(null);
+      return;
+    }
+
+    const obj = info.object as any;
+    // Ensure we only show tooltips for active layer objects that have the fields we expect.
+    if (typeof obj?.hexId !== "string") {
+      setHoverInfo(null);
+      return;
+    }
+
+    setHoverInfo({
+      x: info.x ?? 0,
+      y: info.y ?? 0,
+      hexId: obj.hexId,
+      demand: Number(obj.demand ?? 0),
+      supply: Number(obj.supply ?? 0),
+      ratio: Number(obj.ratio ?? 0),
+      finalPrice: Number(obj.finalPrice ?? 0),
+    });
+  }, []);
+
+  const showPriceInTooltip =
+    demandEvents.length > 0 && supplyVehicles.length > 0 && multiplierData.length > 0 && basePrice > 0;
 
   return (
     <div ref={containerRef} className="relative flex-1 h-full">
@@ -443,9 +471,10 @@ export default function HexagonMap({
         controller={true}
         layers={layers}
         onAfterRender={handleAfterRender}
-        style={{ position: 'relative' }}
+        onHover={handleHover} // ✅ added
+        style={{ position: "relative" }}
       />
-      
+
       {/* Label overlay */}
       <div className="absolute inset-0 pointer-events-none">
         {labelPositions.map((pos, i) => (
@@ -455,21 +484,58 @@ export default function HexagonMap({
             style={{
               left: `${pos.x}px`,
               top: `${pos.y}px`,
-              transform: 'translate(-50%, -50%)',
+              transform: "translate(-50%, -50%)",
               fontSize: `${currentFontSize}px`,
-              fontWeight: 'bold',
-              color: 'white',
-              textShadow: '0 0 4px rgba(0,0,0,0.8), 0 0 8px rgba(0,0,0,0.6)',
-              backgroundColor: 'rgba(0,0,0,0.5)',
-              padding: '2px 6px',
-              borderRadius: '4px',
-              whiteSpace: 'nowrap',
+              fontWeight: "bold",
+              color: "white",
+              textShadow: "0 0 4px rgba(0,0,0,0.8), 0 0 8px rgba(0,0,0,0.6)",
+              backgroundColor: "rgba(0,0,0,0.5)",
+              padding: "2px 6px",
+              borderRadius: "4px",
+              whiteSpace: "nowrap",
             }}
           >
             {pos.displayValue}
           </div>
         ))}
       </div>
+
+      {/* ✅ Hover tooltip */}
+      {hoverInfo ? (
+        <div
+          className="absolute pointer-events-none"
+          style={{
+            left: `${hoverInfo.x + 12}px`,
+            top: `${hoverInfo.y + 12}px`,
+            background: "rgba(0,0,0,0.80)",
+            color: "white",
+            padding: "8px 10px",
+            borderRadius: "8px",
+            border: "1px solid rgba(125, 211, 252, 0.35)",
+            boxShadow: "0 6px 18px rgba(0,0,0,0.35)",
+            fontSize: "12px",
+            lineHeight: 1.3,
+            maxWidth: "260px",
+            whiteSpace: "nowrap",
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>Hex</div>
+          <div>
+            Demand: <span style={{ fontWeight: 600 }}>{hoverInfo.demand}</span>
+          </div>
+          <div>
+            Supply: <span style={{ fontWeight: 600 }}>{hoverInfo.supply}</span>
+          </div>
+          <div>
+            Ratio: <span style={{ fontWeight: 600 }}>{formatRatio(hoverInfo.ratio)}</span>
+          </div>
+          {showPriceInTooltip ? (
+            <div>
+              Price: <span style={{ fontWeight: 600 }}>${hoverInfo.finalPrice.toFixed(2)}</span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {activeHexagons.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-800 text-gray-400">
