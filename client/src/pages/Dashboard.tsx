@@ -3,6 +3,8 @@ import { toast } from "sonner";
 import * as XLSX from "xlsx";
 import HexagonMap from "@/components/HexagonMap";
 import ControlPanel from "@/components/ControlPanel";
+import DistributionView from "@/components/DistributionView";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface EventData {
   timestamp: Date;
@@ -371,17 +373,43 @@ export default function Dashboard() {
         normalizationEnabled={normalizationEnabled}
         onNormalizationEnabledChange={setNormalizationEnabled}
       />
-      <HexagonMap
-        demandEvents={demandEvents}
-        supplyVehicles={supplyVehicles}
-        multiplierData={multiplierData}
-        basePrice={basePrice}
-        hexagonResolution={hexagonResolution}
-        timeframeMinutes={timeframeMinutes}
-        snapshotTime={snapshotTime}
-        // ✅ added
-        normalizationEnabled={normalizationEnabled}
-      />
+      <div className="flex-1 h-full min-w-0">
+        <Tabs defaultValue="map" className="h-full">
+          <div className="flex items-center justify-between px-4 pt-3">
+            <TabsList>
+              <TabsTrigger value="map">Map</TabsTrigger>
+              <TabsTrigger value="distribution">Distribution</TabsTrigger>
+            </TabsList>
+          </div>
+
+          <TabsContent value="map" className="h-[calc(100%-52px)]">
+            <HexagonMap
+              demandEvents={demandEvents}
+              supplyVehicles={supplyVehicles}
+              multiplierData={multiplierData}
+              basePrice={basePrice}
+              hexagonResolution={hexagonResolution}
+              timeframeMinutes={timeframeMinutes}
+              snapshotTime={snapshotTime}
+              normalizationEnabled={normalizationEnabled}
+            />
+          </TabsContent>
+
+          <TabsContent value="distribution" className="h-[calc(100%-52px)] overflow-hidden">
+            <DistributionView
+              demandEvents={demandEvents}
+              supplyVehicles={supplyVehicles}
+              multiplierData={multiplierData}
+              basePrice={basePrice}
+              hexagonResolution={hexagonResolution}
+              timeframeMinutes={timeframeMinutes}
+              normalizationEnabled={normalizationEnabled}
+              minTime={minTime}
+              maxTime={maxTime}
+            />
+          </TabsContent>
+        </Tabs>
+      </div>
     </div>
   );
 }
