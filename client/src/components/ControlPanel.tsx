@@ -187,7 +187,7 @@ export default function ControlPanel({
           className="w-full"
           onClick={() => onNormalizationEnabledChange(!normalizationEnabled)}
         >
-          {normalizationEnabled ? "ON (log-normalized)" : "OFF (raw ratio)"}
+          {normalizationEnabled ? "ON (z-score)" : "OFF (raw ratio)"}
         </Button>
         <p className="text-xs text-muted-foreground mt-2">
           Controls how the ratio is computed when both demand + supply are uploaded
