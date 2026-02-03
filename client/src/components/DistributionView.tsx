@@ -63,6 +63,23 @@ function safeNumber(n: unknown) {
   return Number.isFinite(v) ? v : 0;
 }
 
+function csvEscape(s: string) {
+  if (s.includes('"') || s.includes(",") || s.includes("\n") || s.includes("\r")) {
+    return '"' + s.replaceAll('"', '""') + '"';
+  }
+  return s;
+}
+
+function fmtForFilename(d: Date) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  const mm = pad(d.getMonth() + 1);
+  const dd = pad(d.getDate());
+  const hh = pad(d.getHours());
+  const min = pad(d.getMinutes());
+  return `${yyyy}${mm}${dd}-${hh}${min}`;
+}
+
 export default function DistributionView({
   demandEvents,
   supplyVehicles,
@@ -335,19 +352,45 @@ export default function DistributionView({
     const counts = Array.from({ length: nBins }, () => 0);
 
     for (const v of values) {
-      const idx = Math.min(
-        nBins - 1,
-        Math.max(0, Math.floor((v - min) / width))
-      );
+      const idx = Math.min(nBins - 1, Math.max(0, Math.floor((v - min) / width)));
       counts[idx] += 1;
     }
 
-    return counts.map((count, i) => {
+    const out = counts.map((count, i) => {
       const a = min + i * width;
       const b = min + (i + 1) * width;
-      return { bin: `${a.toFixed(2)}–${b.toFixed(2)}`, count };
+      const label = `${a.toFixed(2)}–${b.toFixed(2)}`;
+      return { bin: label, count };
     });
+
+    return out;
   }, [bins, values]);
+
+  const downloadDistributionCsv = () => {
+    if (histogramData.length === 0) return;
+
+    const rows: string[][] = [
+      ["value", "frequency"],
+      ...histogramData.map((h) => [String(h.bin), String(h.count)]),
+    ];
+
+    const csv = rows.map((r) => r.map(csvEscape).join(",")).join("\n") + "\n";
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+
+    const fromTag = effectiveFrom ? fmtForFilename(effectiveFrom) : "from";
+    const toTag = effectiveTo ? fmtForFilename(effectiveTo) : "to";
+    const kind = mode === "price" ? "prices" : "ratios";
+    const filename = `distribution-${kind}-${fromTag}-${toTag}.csv`;
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
 
   const title = useMemo(() => {
     if (mode === "price") return "Price distribution";
@@ -441,6 +484,7 @@ export default function DistributionView({
               variant="outline"
               disabled={!hasAnyData}
               onClick={() => {
+                // Reset to full available range.
                 if (!computedDefaultRange) return;
                 setDraftFromValue(toDateTimeLocalValue(computedDefaultRange.from));
                 setDraftToValue(toDateTimeLocalValue(computedDefaultRange.to));
@@ -453,6 +497,7 @@ export default function DistributionView({
               type="button"
               disabled={!hasAnyData}
               onClick={() => {
+                // Apply draft settings and trigger recalculation.
                 setFromValue(draftFromValue);
                 setToValue(draftToValue);
                 setStepMinutes(draftStepMinutes);
@@ -461,6 +506,15 @@ export default function DistributionView({
               }}
             >
               Recalculate now
+            </Button>
+
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!hasAnyData || histogramData.length === 0}
+              onClick={downloadDistributionCsv}
+            >
+              Download CSV
             </Button>
 
             {isDirty ? (
@@ -494,27 +548,19 @@ export default function DistributionView({
                 </Card>
                 <Card className="p-3">
                   <div className="text-xs text-muted-foreground">Min</div>
-                  <div className="text-lg font-semibold">
-                    {summary.min.toFixed(2)}
-                  </div>
+                  <div className="text-lg font-semibold">{summary.min.toFixed(2)}</div>
                 </Card>
                 <Card className="p-3">
                   <div className="text-xs text-muted-foreground">Median</div>
-                  <div className="text-lg font-semibold">
-                    {summary.p50.toFixed(2)}
-                  </div>
+                  <div className="text-lg font-semibold">{summary.p50.toFixed(2)}</div>
                 </Card>
                 <Card className="p-3">
                   <div className="text-xs text-muted-foreground">Mean</div>
-                  <div className="text-lg font-semibold">
-                    {summary.mean.toFixed(2)}
-                  </div>
+                  <div className="text-lg font-semibold">{summary.mean.toFixed(2)}</div>
                 </Card>
                 <Card className="p-3">
                   <div className="text-xs text-muted-foreground">Max</div>
-                  <div className="text-lg font-semibold">
-                    {summary.max.toFixed(2)}
-                  </div>
+                  <div className="text-lg font-semibold">{summary.max.toFixed(2)}</div>
                 </Card>
               </div>
             ) : null}
@@ -542,9 +588,8 @@ export default function DistributionView({
                 </ResponsiveContainer>
               </div>
               <p className="mt-3 text-xs text-muted-foreground">
-                Distribution is computed by sampling snapshots in the selected
-                time range and aggregating values across all active hexagons per
-                snapshot.
+                Distribution is computed by sampling snapshots in the selected time range and
+                aggregating values across all active hexagons per snapshot.
               </p>
             </Card>
           </>
