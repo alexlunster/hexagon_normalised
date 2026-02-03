@@ -53,7 +53,6 @@ type Props = {
 };
 
 function toDateTimeLocalValue(d: Date) {
-  // Convert Date -> 'YYYY-MM-DDTHH:mm' in local time for <input type="datetime-local" />
   const tzOffsetMs = d.getTimezoneOffset() * 60 * 1000;
   return new Date(d.getTime() - tzOffsetMs).toISOString().slice(0, 16);
 }
@@ -82,11 +81,7 @@ export default function DistributionView({
 
   const computedDefaultRange = useMemo(() => {
     if (!minTime || !maxTime) return null;
-    // Default to the full data range.
-    return {
-      from: minTime,
-      to: maxTime,
-    };
+    return { from: minTime, to: maxTime };
   }, [minTime, maxTime]);
 
   const [fromValue, setFromValue] = useState(() => {
@@ -99,7 +94,6 @@ export default function DistributionView({
     return toDateTimeLocalValue(computedDefaultRange.to);
   });
 
-  // Step controls how densely we sample snapshots inside the selected time range.
   const [stepMinutes, setStepMinutes] = useState<number>(15);
   const [bins, setBins] = useState<number>(20);
 
@@ -113,7 +107,6 @@ export default function DistributionView({
 
   const getMultiplier = (ratio: number): number => {
     if (multiplierData.length === 0) return 1;
-    // multiplierData is already sorted desc in upload logic, but keep this defensive.
     const sorted = [...multiplierData].sort((a, b) => b.minRatio - a.minRatio);
     for (const entry of sorted) {
       if (ratio >= entry.minRatio) return entry.multiplier;
@@ -164,7 +157,7 @@ export default function DistributionView({
       return out;
     }
 
-    // Both datasets: compute raw ratio per hex
+    // Both datasets: compute raw ratio per hex + z-score (optional)
     const rawRatioMap = new Map<string, number>();
     let mean = 0;
     let m2 = 0;
@@ -203,11 +196,7 @@ export default function DistributionView({
 
   const { values, effectiveFrom, effectiveTo } = useMemo(() => {
     if (!minTime || !maxTime) {
-      return {
-        values: [] as number[],
-        effectiveFrom: null as Date | null,
-        effectiveTo: null as Date | null,
-      };
+      return { values: [] as number[], effectiveFrom: null as Date | null, effectiveTo: null as Date | null };
     }
 
     const parsedFrom = fromValue ? new Date(fromValue) : minTime;
@@ -223,7 +212,6 @@ export default function DistributionView({
     const stepMs = Math.max(1, stepMinutes) * 60 * 1000;
     const collected: number[] = [];
 
-    // Always include the range endpoints, then fill the middle by step.
     const times: number[] = [];
     times.push(from.getTime());
     for (let t = from.getTime() + stepMs; t < to.getTime(); t += stepMs) {
@@ -243,7 +231,6 @@ export default function DistributionView({
     return { values: collected, effectiveFrom: from, effectiveTo: to };
   }, [
     basePrice,
-    bins,
     demandEvents,
     fromValue,
     hexagonResolution,
@@ -271,8 +258,15 @@ export default function DistributionView({
   const histogramData = useMemo(() => {
     if (values.length === 0) return [] as { bin: string; count: number }[];
     const nBins = Math.max(5, Math.min(60, Math.round(bins)));
-    const min = Math.min(...values);
-    const max = Math.max(...values);
+
+    // Avoid Math.min(...values)/Math.max(...values) for large arrays (can throw RangeError).
+    let min = Infinity;
+    let max = -Infinity;
+    for (const v of values) {
+      if (!Number.isFinite(v)) continue;
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
     if (!Number.isFinite(min) || !Number.isFinite(max)) return [];
 
     if (min === max) {
