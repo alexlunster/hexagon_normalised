@@ -400,4 +400,82 @@ export default function HexagonMap({
           displayValue = formatRatio(hex.ratio);
         }
         
-        newPositions.push
+        newPositions.push({
+          x,
+          y,
+          ratio: hex.ratio,
+          displayValue,
+        });
+      }
+    });
+
+    // Only update if positions changed significantly
+    const positionsKey = newPositions.map(p => `${Math.round(p.x)},${Math.round(p.y)}`).join('|');
+    if (positionsKey !== prevPositionsRef.current) {
+      setLabelPositions(newPositions);
+      prevPositionsRef.current = positionsKey;
+    }
+  }, [activeHexagons, demandEvents.length, supplyVehicles.length, multiplierData.length, basePrice]);
+
+  const handleAfterRender = useCallback(() => {
+    const viewport = new WebMercatorViewport({
+      ...viewState,
+      width: containerSize.width,
+      height: containerSize.height,
+    });
+    updateLabels(viewport);
+  }, [viewState, containerSize, updateLabels]);
+
+  const formatRatio = (ratio: number) => {
+    if (ratio === Infinity) return "∞";
+    if (ratio === 0) return "0";
+    if (ratio < 0.01) return "<0.01";
+    if (ratio < 1) return ratio.toFixed(2);
+    if (ratio < 10) return ratio.toFixed(1);
+    return Math.round(ratio).toString();
+  };
+
+  return (
+    <div ref={containerRef} className="relative flex-1 h-full">
+      <DeckGL
+        viewState={viewState}
+        onViewStateChange={({ viewState: newViewState }) => setViewState(newViewState as MapViewState)}
+        controller={true}
+        layers={layers}
+        onAfterRender={handleAfterRender}
+        style={{ position: 'relative' }}
+      />
+      
+      {/* Label overlay */}
+      <div className="absolute inset-0 pointer-events-none">
+        {labelPositions.map((pos, i) => (
+          <div
+            key={i}
+            className="absolute"
+            style={{
+              left: `${pos.x}px`,
+              top: `${pos.y}px`,
+              transform: 'translate(-50%, -50%)',
+              fontSize: `${currentFontSize}px`,
+              fontWeight: 'bold',
+              color: 'white',
+              textShadow: '0 0 4px rgba(0,0,0,0.8), 0 0 8px rgba(0,0,0,0.6)',
+              backgroundColor: 'rgba(0,0,0,0.5)',
+              padding: '2px 6px',
+              borderRadius: '4px',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {pos.displayValue}
+          </div>
+        ))}
+      </div>
+
+      {activeHexagons.length === 0 && (
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-800 text-gray-400">
+          Upload demand and supply files to get started
+        </div>
+      )}
+    </div>
+  );
+}
