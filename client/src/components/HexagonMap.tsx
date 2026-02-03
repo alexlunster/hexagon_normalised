@@ -46,8 +46,16 @@ interface HexagonMapProps {
 interface LabelPosition {
   x: number;
   y: number;
-  ratio: number;
+
+  // what you display
   displayValue: string;
+
+  // ✅ extra data for tooltip
+  hexId: string;
+  demand: number;
+  supply: number;
+  ratio: number;
+  finalPrice: number;
 }
 
 type HoverInfoState = {
@@ -75,7 +83,7 @@ export default function HexagonMap({
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 800, height: 600 });
 
-  // ✅ added
+  // ✅ hover tooltip state (driven by label hover, NOT by hex border)
   const [hoverInfo, setHoverInfo] = useState<HoverInfoState>(null);
 
   const [viewState, setViewState] = useState<MapViewState>({
@@ -132,21 +140,23 @@ export default function HexagonMap({
     return journeys / vehicles;
   }, []);
 
-  // Get multiplier from ratio
   const getMultiplier = (ratio: number): number => {
     if (multiplierData.length === 0) return 1;
-
-    // Sort by minRatio descending (should already be sorted, but ensure it)
     const sorted = [...multiplierData].sort((a, b) => b.minRatio - a.minRatio);
-
     for (const entry of sorted) {
-      if (ratio >= entry.minRatio) {
-        return entry.multiplier;
-      }
+      if (ratio >= entry.minRatio) return entry.multiplier;
     }
-
-    // If ratio is below all thresholds, return the last (lowest) multiplier
     return sorted[sorted.length - 1]?.multiplier || 1;
+  };
+
+  const formatRatio = (ratio: number) => {
+    if (ratio === Infinity) return "∞";
+    if (ratio === 0) return "0";
+    if (ratio < 0.01 && ratio > 0) return "<0.01";
+    if (ratio > -0.01 && ratio < 0) return ">-0.01";
+    if (Math.abs(ratio) < 1) return ratio.toFixed(2);
+    if (Math.abs(ratio) < 10) return ratio.toFixed(1);
+    return Math.round(ratio).toString();
   };
 
   // Aggregate demand and supply into hexagons and calculate ratios
@@ -155,14 +165,12 @@ export default function HexagonMap({
     const supplyMap = new Map<string, number>();
     const allHexIds = new Set<string>();
 
-    // Count demand events per hexagon
     filteredDemand.forEach((event) => {
       const hexId = latLngToCell(event.latitude, event.longitude, hexagonResolution);
       demandMap.set(hexId, (demandMap.get(hexId) || 0) + 1);
       allHexIds.add(hexId);
     });
 
-    // Count supply vehicles per hexagon
     availableSupply.forEach((vehicle) => {
       const hexId = latLngToCell(vehicle.latitude, vehicle.longitude, hexagonResolution);
       supplyMap.set(hexId, (supplyMap.get(hexId) || 0) + 1);
@@ -171,17 +179,22 @@ export default function HexagonMap({
 
     const hexMap = new Map<
       string,
-      { hexId: string; ratio: number; center: [number, number]; demand: number; supply: number; finalPrice: number }
+      {
+        hexId: string;
+        ratio: number;
+        center: [number, number];
+        demand: number;
+        supply: number;
+        finalPrice: number;
+      }
     >();
 
-    // Precompute mean/stdDev of the raw ratio across all active hexagons
     const hasBothData = demandMap.size > 0 && supplyMap.size > 0;
     const rawRatioMap = new Map<string, number>();
     let ratioMean = 0;
     let ratioStdDev = 0;
 
     if (hasBothData) {
-      // Welford's algorithm
       let n = 0;
       let mean = 0;
       let m2 = 0;
@@ -207,7 +220,7 @@ export default function HexagonMap({
       const demand = demandMap.get(hexId) || 0;
       const supply = supplyMap.get(hexId) || 0;
 
-      let ratio: number;
+      let ratio = 0;
       let finalPrice = 0;
       const hasDemandOnly = demandMap.size > 0 && supplyMap.size === 0;
       const hasMultiplier = multiplierData.length > 0;
@@ -240,21 +253,17 @@ export default function HexagonMap({
     const activeHexIds = new Set(hexMap.keys());
     const inactiveSet = new Set<string>();
 
-    // Find all neighboring hexagons (1 ring around each active hexagon)
     activeHexIds.forEach((hexId) => {
       try {
         const neighbors = gridDisk(hexId, 1);
         neighbors.forEach((neighborId) => {
-          if (!activeHexIds.has(neighborId)) {
-            inactiveSet.add(neighborId);
-          }
+          if (!activeHexIds.has(neighborId)) inactiveSet.add(neighborId);
         });
       } catch {
         // ignore
       }
     });
 
-    // Create inactive hexagon data
     const inactive = Array.from(inactiveSet).map((hexId) => {
       const [lat, lng] = cellToLatLng(hexId);
       return {
@@ -267,8 +276,7 @@ export default function HexagonMap({
       };
     });
 
-    const active = Array.from(hexMap.values());
-    return { activeHexagons: active, inactiveHexagons: inactive };
+    return { activeHexagons: Array.from(hexMap.values()), inactiveHexagons: inactive };
   }, [
     filteredDemand,
     availableSupply,
@@ -318,11 +326,10 @@ export default function HexagonMap({
 
   const currentFontSize = getFontSize(viewState.zoom);
 
-  // Create layers
+  // Create layers (no hover picking needed anymore)
   const layers = useMemo(() => {
     const allLayers: any[] = [];
 
-    // Add base map tiles
     allLayers.push(
       new TileLayer({
         id: "tile-layer",
@@ -341,7 +348,6 @@ export default function HexagonMap({
       })
     );
 
-    // Add inactive hexagons (pale gray borders)
     if (inactiveHexagons.length > 0) {
       allLayers.push(
         new H3HexagonLayer({
@@ -359,15 +365,12 @@ export default function HexagonMap({
       );
     }
 
-    // Add active hexagons with ratios
     if (activeHexagons.length > 0) {
       allLayers.push(
         new H3HexagonLayer({
           id: "active-hexagon-layer",
           data: activeHexagons,
-          pickable: true,
-          autoHighlight: true, // ✅ makes hover obvious
-          highlightColor: [125, 211, 252, 160], // light blue highlight
+          pickable: false, // ✅ important: no picking on hex border
           wireframe: true,
           filled: false,
           extruded: false,
@@ -382,16 +385,6 @@ export default function HexagonMap({
     return allLayers;
   }, [activeHexagons, inactiveHexagons]);
 
-  const formatRatio = (ratio: number) => {
-    if (ratio === Infinity) return "∞";
-    if (ratio === 0) return "0";
-    if (ratio < 0.01 && ratio > 0) return "<0.01";
-    if (ratio > -0.01 && ratio < 0) return ">-0.01";
-    if (Math.abs(ratio) < 1) return ratio.toFixed(2);
-    if (Math.abs(ratio) < 10) return ratio.toFixed(1);
-    return Math.round(ratio).toString();
-  };
-
   // Update label positions when viewport changes
   const updateLabels = useCallback(
     (viewport: WebMercatorViewport) => {
@@ -404,20 +397,26 @@ export default function HexagonMap({
 
       activeHexagons.forEach((hex) => {
         const [x, y] = viewport.project([hex.center[0], hex.center[1]]);
-
-        // Only show labels for hexagons visible in viewport
         if (x >= 0 && x <= viewport.width && y >= 0 && y <= viewport.height) {
           const displayValue = showPrice ? `$${hex.finalPrice.toFixed(2)}` : formatRatio(hex.ratio);
+
           newPositions.push({
             x,
             y,
-            ratio: hex.ratio,
             displayValue,
+            hexId: hex.hexId,
+            demand: hex.demand,
+            supply: hex.supply,
+            ratio: hex.ratio,
+            finalPrice: hex.finalPrice,
           });
         }
       });
 
-      const positionsKey = newPositions.map((p) => `${Math.round(p.x)},${Math.round(p.y)}`).join("|");
+      // only update if positions changed
+      const positionsKey = newPositions
+        .map((p) => `${Math.round(p.x)},${Math.round(p.y)},${p.displayValue}`)
+        .join("|");
       if (positionsKey !== prevPositionsRef.current) {
         setLabelPositions(newPositions);
         prevPositionsRef.current = positionsKey;
@@ -435,33 +434,27 @@ export default function HexagonMap({
     updateLabels(viewport);
   }, [viewState, containerSize, updateLabels]);
 
-  // ✅ added: hover handler to show demand/supply tooltip
-  const handleHover = useCallback((info: any) => {
-    if (!info || !info.object) {
-      setHoverInfo(null);
-      return;
-    }
-
-    const obj = info.object as any;
-    // Ensure we only show tooltips for active layer objects that have the fields we expect.
-    if (typeof obj?.hexId !== "string") {
-      setHoverInfo(null);
-      return;
-    }
-
-    setHoverInfo({
-      x: info.x ?? 0,
-      y: info.y ?? 0,
-      hexId: obj.hexId,
-      demand: Number(obj.demand ?? 0),
-      supply: Number(obj.supply ?? 0),
-      ratio: Number(obj.ratio ?? 0),
-      finalPrice: Number(obj.finalPrice ?? 0),
-    });
-  }, []);
-
+  // Tooltip should show price if price is being computed
   const showPriceInTooltip =
     demandEvents.length > 0 && supplyVehicles.length > 0 && multiplierData.length > 0 && basePrice > 0;
+
+  // Helper: set tooltip position based on mouse
+  const setHoverFromMouse = (e: React.MouseEvent, label: LabelPosition) => {
+    // Use container-local coordinates (stable even if page scrolls)
+    const rect = containerRef.current?.getBoundingClientRect();
+    const x = rect ? e.clientX - rect.left : label.x;
+    const y = rect ? e.clientY - rect.top : label.y;
+
+    setHoverInfo({
+      x,
+      y,
+      hexId: label.hexId,
+      demand: label.demand,
+      supply: label.supply,
+      ratio: label.ratio,
+      finalPrice: label.finalPrice,
+    });
+  };
 
   return (
     <div ref={containerRef} className="relative flex-1 h-full">
@@ -471,16 +464,15 @@ export default function HexagonMap({
         controller={true}
         layers={layers}
         onAfterRender={handleAfterRender}
-        onHover={handleHover} // ✅ added
         style={{ position: "relative" }}
       />
 
-      {/* Label overlay */}
+      {/* Label overlay (interactive labels only) */}
       <div className="absolute inset-0 pointer-events-none">
         {labelPositions.map((pos, i) => (
           <div
-            key={i}
-            className="absolute"
+            key={`${pos.hexId}-${i}`}
+            className="absolute pointer-events-auto"
             style={{
               left: `${pos.x}px`,
               top: `${pos.y}px`,
@@ -493,14 +485,18 @@ export default function HexagonMap({
               padding: "2px 6px",
               borderRadius: "4px",
               whiteSpace: "nowrap",
+              cursor: "default",
             }}
+            onMouseEnter={(e) => setHoverFromMouse(e, pos)}
+            onMouseMove={(e) => setHoverFromMouse(e, pos)}
+            onMouseLeave={() => setHoverInfo(null)}
           >
             {pos.displayValue}
           </div>
         ))}
       </div>
 
-      {/* ✅ Hover tooltip */}
+      {/* Hover tooltip (only shown when hovering the label) */}
       {hoverInfo ? (
         <div
           className="absolute pointer-events-none"
@@ -519,7 +515,7 @@ export default function HexagonMap({
             whiteSpace: "nowrap",
           }}
         >
-          <div style={{ fontWeight: 700, marginBottom: 4 }}>Hex</div>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>Details</div>
           <div>
             Demand: <span style={{ fontWeight: 600 }}>{hoverInfo.demand}</span>
           </div>
@@ -545,4 +541,3 @@ export default function HexagonMap({
     </div>
   );
 }
-
