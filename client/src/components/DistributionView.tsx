@@ -598,3 +598,4 @@ export default function DistributionView({
     </div>
   );
 }
+
