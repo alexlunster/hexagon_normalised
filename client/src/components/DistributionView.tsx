@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { latLngToCell } from "h3-js";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -53,6 +53,7 @@ type Props = {
 };
 
 function toDateTimeLocalValue(d: Date) {
+  // Convert Date -> 'YYYY-MM-DDTHH:mm' in local time for <input type="datetime-local" />
   const tzOffsetMs = d.getTimezoneOffset() * 60 * 1000;
   return new Date(d.getTime() - tzOffsetMs).toISOString().slice(0, 16);
 }
@@ -81,21 +82,70 @@ export default function DistributionView({
 
   const computedDefaultRange = useMemo(() => {
     if (!minTime || !maxTime) return null;
-    return { from: minTime, to: maxTime };
+    // Default to the full data range.
+    return {
+      from: minTime,
+      to: maxTime,
+    };
   }, [minTime, maxTime]);
 
-  const [fromValue, setFromValue] = useState(() => {
+  // Draft (UI) settings: changing these should NOT trigger recalculation.
+  const [draftFromValue, setDraftFromValue] = useState(() => {
     if (!computedDefaultRange) return "";
     return toDateTimeLocalValue(computedDefaultRange.from);
   });
 
-  const [toValue, setToValue] = useState(() => {
+  const [draftToValue, setDraftToValue] = useState(() => {
     if (!computedDefaultRange) return "";
     return toDateTimeLocalValue(computedDefaultRange.to);
   });
 
+  // Step controls how densely we sample snapshots inside the selected time range.
+  const [draftStepMinutes, setDraftStepMinutes] = useState<number>(15);
+  const [draftBins, setDraftBins] = useState<number>(20);
+
+  // Applied settings: calculations are ONLY based on these values.
+  const [fromValue, setFromValue] = useState(() => {
+    if (!computedDefaultRange) return "";
+    return toDateTimeLocalValue(computedDefaultRange.from);
+  });
+  const [toValue, setToValue] = useState(() => {
+    if (!computedDefaultRange) return "";
+    return toDateTimeLocalValue(computedDefaultRange.to);
+  });
   const [stepMinutes, setStepMinutes] = useState<number>(15);
   const [bins, setBins] = useState<number>(20);
+
+  // Clicking "Recalculate now" increments this nonce to force recalculation even if values are unchanged.
+  const [recalcNonce, setRecalcNonce] = useState(0);
+
+  // If the available data range changes (new uploads), set default draft/applied values
+  // ONLY when the user hasn't already set something.
+  useEffect(() => {
+    if (!computedDefaultRange) return;
+    const nextFrom = toDateTimeLocalValue(computedDefaultRange.from);
+    const nextTo = toDateTimeLocalValue(computedDefaultRange.to);
+
+    // Update draft fields if empty.
+    if (draftFromValue === "" && draftToValue === "") {
+      setDraftFromValue(nextFrom);
+      setDraftToValue(nextTo);
+    }
+
+    // Update applied fields if empty.
+    if (fromValue === "" && toValue === "") {
+      setFromValue(nextFrom);
+      setToValue(nextTo);
+      setRecalcNonce((n) => n + 1);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [computedDefaultRange]);
+
+  const isDirty =
+    draftFromValue !== fromValue ||
+    draftToValue !== toValue ||
+    draftStepMinutes !== stepMinutes ||
+    draftBins !== bins;
 
   const mode: DistributionMode = useMemo(() => {
     if (canShowPrice) return "price";
@@ -107,6 +157,7 @@ export default function DistributionView({
 
   const getMultiplier = (ratio: number): number => {
     if (multiplierData.length === 0) return 1;
+    // multiplierData is already sorted desc in upload logic, but keep this defensive.
     const sorted = [...multiplierData].sort((a, b) => b.minRatio - a.minRatio);
     for (const entry of sorted) {
       if (ratio >= entry.minRatio) return entry.multiplier;
@@ -157,7 +208,7 @@ export default function DistributionView({
       return out;
     }
 
-    // Both datasets: compute raw ratio per hex + z-score (optional)
+    // Both datasets: compute raw ratio per hex
     const rawRatioMap = new Map<string, number>();
     let mean = 0;
     let m2 = 0;
@@ -196,7 +247,11 @@ export default function DistributionView({
 
   const { values, effectiveFrom, effectiveTo } = useMemo(() => {
     if (!minTime || !maxTime) {
-      return { values: [] as number[], effectiveFrom: null as Date | null, effectiveTo: null as Date | null };
+      return {
+        values: [] as number[],
+        effectiveFrom: null as Date | null,
+        effectiveTo: null as Date | null,
+      };
     }
 
     const parsedFrom = fromValue ? new Date(fromValue) : minTime;
@@ -212,6 +267,7 @@ export default function DistributionView({
     const stepMs = Math.max(1, stepMinutes) * 60 * 1000;
     const collected: number[] = [];
 
+    // Always include the range endpoints, then fill the middle by step.
     const times: number[] = [];
     times.push(from.getTime());
     for (let t = from.getTime() + stepMs; t < to.getTime(); t += stepMs) {
@@ -230,7 +286,9 @@ export default function DistributionView({
 
     return { values: collected, effectiveFrom: from, effectiveTo: to };
   }, [
+    recalcNonce,
     basePrice,
+    bins,
     demandEvents,
     fromValue,
     hexagonResolution,
@@ -277,7 +335,10 @@ export default function DistributionView({
     const counts = Array.from({ length: nBins }, () => 0);
 
     for (const v of values) {
-      const idx = Math.min(nBins - 1, Math.max(0, Math.floor((v - min) / width)));
+      const idx = Math.min(
+        nBins - 1,
+        Math.max(0, Math.floor((v - min) / width))
+      );
       counts[idx] += 1;
     }
 
@@ -319,8 +380,8 @@ export default function DistributionView({
               <label className="text-xs text-muted-foreground">From</label>
               <Input
                 type="datetime-local"
-                value={fromValue}
-                onChange={(e) => setFromValue(e.target.value)}
+                value={draftFromValue}
+                onChange={(e) => setDraftFromValue(e.target.value)}
                 disabled={!hasAnyData}
                 className="w-[210px]"
               />
@@ -330,8 +391,8 @@ export default function DistributionView({
               <label className="text-xs text-muted-foreground">To</label>
               <Input
                 type="datetime-local"
-                value={toValue}
-                onChange={(e) => setToValue(e.target.value)}
+                value={draftToValue}
+                onChange={(e) => setDraftToValue(e.target.value)}
                 disabled={!hasAnyData}
                 className="w-[210px]"
               />
@@ -340,8 +401,8 @@ export default function DistributionView({
             <div className="flex flex-col gap-1">
               <label className="text-xs text-muted-foreground">Step</label>
               <Select
-                value={String(stepMinutes)}
-                onValueChange={(v) => setStepMinutes(parseInt(v, 10))}
+                value={String(draftStepMinutes)}
+                onValueChange={(v) => setDraftStepMinutes(parseInt(v, 10))}
                 disabled={!hasAnyData}
               >
                 <SelectTrigger className="w-[130px]">
@@ -359,8 +420,8 @@ export default function DistributionView({
             <div className="flex flex-col gap-1">
               <label className="text-xs text-muted-foreground">Bins</label>
               <Select
-                value={String(bins)}
-                onValueChange={(v) => setBins(parseInt(v, 10))}
+                value={String(draftBins)}
+                onValueChange={(v) => setDraftBins(parseInt(v, 10))}
                 disabled={!hasAnyData}
               >
                 <SelectTrigger className="w-[110px]">
@@ -381,12 +442,33 @@ export default function DistributionView({
               disabled={!hasAnyData}
               onClick={() => {
                 if (!computedDefaultRange) return;
-                setFromValue(toDateTimeLocalValue(computedDefaultRange.from));
-                setToValue(toDateTimeLocalValue(computedDefaultRange.to));
+                setDraftFromValue(toDateTimeLocalValue(computedDefaultRange.from));
+                setDraftToValue(toDateTimeLocalValue(computedDefaultRange.to));
               }}
             >
               Full range
             </Button>
+
+            <Button
+              type="button"
+              disabled={!hasAnyData}
+              onClick={() => {
+                setFromValue(draftFromValue);
+                setToValue(draftToValue);
+                setStepMinutes(draftStepMinutes);
+                setBins(draftBins);
+                setRecalcNonce((x) => x + 1);
+              }}
+            >
+              Recalculate now
+            </Button>
+
+            {isDirty ? (
+              <span className="text-xs text-muted-foreground self-center">
+                Settings changed — press{" "}
+                <span className="font-medium">Recalculate now</span>
+              </span>
+            ) : null}
           </div>
         </div>
 
@@ -412,19 +494,27 @@ export default function DistributionView({
                 </Card>
                 <Card className="p-3">
                   <div className="text-xs text-muted-foreground">Min</div>
-                  <div className="text-lg font-semibold">{summary.min.toFixed(2)}</div>
+                  <div className="text-lg font-semibold">
+                    {summary.min.toFixed(2)}
+                  </div>
                 </Card>
                 <Card className="p-3">
                   <div className="text-xs text-muted-foreground">Median</div>
-                  <div className="text-lg font-semibold">{summary.p50.toFixed(2)}</div>
+                  <div className="text-lg font-semibold">
+                    {summary.p50.toFixed(2)}
+                  </div>
                 </Card>
                 <Card className="p-3">
                   <div className="text-xs text-muted-foreground">Mean</div>
-                  <div className="text-lg font-semibold">{summary.mean.toFixed(2)}</div>
+                  <div className="text-lg font-semibold">
+                    {summary.mean.toFixed(2)}
+                  </div>
                 </Card>
                 <Card className="p-3">
                   <div className="text-xs text-muted-foreground">Max</div>
-                  <div className="text-lg font-semibold">{summary.max.toFixed(2)}</div>
+                  <div className="text-lg font-semibold">
+                    {summary.max.toFixed(2)}
+                  </div>
                 </Card>
               </div>
             ) : null}
@@ -447,13 +537,14 @@ export default function DistributionView({
                     />
                     <YAxis allowDecimals={false} />
                     <Tooltip />
-                    <Bar dataKey="count" />
+                    <Bar dataKey="count" fill="#7dd3fc" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
               <p className="mt-3 text-xs text-muted-foreground">
-                Distribution is computed by sampling snapshots in the selected time range and
-                aggregating values across all active hexagons per snapshot.
+                Distribution is computed by sampling snapshots in the selected
+                time range and aggregating values across all active hexagons per
+                snapshot.
               </p>
             </Card>
           </>
