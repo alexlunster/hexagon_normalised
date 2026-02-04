@@ -5,6 +5,7 @@ import DeckGL from "@deck.gl/react";
 import { WebMercatorViewport } from "@deck.gl/core";
 import { cellToLatLng, latLngToCell, gridDisk } from "h3-js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import LoadingOverlay from "@/components/LoadingOverlay";
 
 interface EventData {
   timestamp: Date;
@@ -78,6 +79,8 @@ export default function HexagonMap({
   hexagonResolution,
   normalizationEnabled,
 }: HexagonMapProps) {
+  const [isCalculating, setIsCalculating] = useState(false);
+
   const [labelPositions, setLabelPositions] = useState<LabelPosition[]>([]);
   const prevPositionsRef = useRef<string>("");
   const containerRef = useRef<HTMLDivElement>(null);
@@ -126,6 +129,20 @@ export default function HexagonMap({
     });
   }, [supplyVehicles, snapshotTime]);
 
+  type HexCell = {
+    hexId: string;
+    ratio: number;
+    center: [number, number];
+    demand: number;
+    supply: number;
+    finalPrice: number;
+  };
+
+  const [{ activeHexagons, inactiveHexagons }, setHexagons] = useState<{
+    activeHexagons: HexCell[];
+    inactiveHexagons: HexCell[];
+  }>({ activeHexagons: [], inactiveHexagons: [] });
+
   const computeZScore = useCallback((value: number, mean: number, stdDev: number): number => {
     if (!Number.isFinite(value)) return 0;
     if (!Number.isFinite(mean)) return 0;
@@ -159,124 +176,123 @@ export default function HexagonMap({
     return Math.round(ratio).toString();
   };
 
-  // Aggregate demand and supply into hexagons and calculate ratios
-  const { activeHexagons, inactiveHexagons } = useMemo(() => {
-    const demandMap = new Map<string, number>();
-    const supplyMap = new Map<string, number>();
-    const allHexIds = new Set<string>();
+  // Aggregate demand and supply into hexagons and calculate ratios.
+  // Done in an effect so we can show a loading overlay BEFORE heavy computation kicks in.
+  useEffect(() => {
+    setIsCalculating(true);
+    setHoverInfo(null);
 
-    filteredDemand.forEach((event) => {
-      const hexId = latLngToCell(event.latitude, event.longitude, hexagonResolution);
-      demandMap.set(hexId, (demandMap.get(hexId) || 0) + 1);
-      allHexIds.add(hexId);
-    });
+    const t = setTimeout(() => {
+      const demandMap = new Map<string, number>();
+      const supplyMap = new Map<string, number>();
+      const allHexIds = new Set<string>();
 
-    availableSupply.forEach((vehicle) => {
-      const hexId = latLngToCell(vehicle.latitude, vehicle.longitude, hexagonResolution);
-      supplyMap.set(hexId, (supplyMap.get(hexId) || 0) + 1);
-      allHexIds.add(hexId);
-    });
+      filteredDemand.forEach((event) => {
+        const hexId = latLngToCell(event.latitude, event.longitude, hexagonResolution);
+        demandMap.set(hexId, (demandMap.get(hexId) || 0) + 1);
+        allHexIds.add(hexId);
+      });
 
-    const hexMap = new Map<
-      string,
-      {
-        hexId: string;
-        ratio: number;
-        center: [number, number];
-        demand: number;
-        supply: number;
-        finalPrice: number;
+      availableSupply.forEach((vehicle) => {
+        const hexId = latLngToCell(vehicle.latitude, vehicle.longitude, hexagonResolution);
+        supplyMap.set(hexId, (supplyMap.get(hexId) || 0) + 1);
+        allHexIds.add(hexId);
+      });
+
+      const hexMap = new Map<string, HexCell>();
+
+      const hasBothData = demandMap.size > 0 && supplyMap.size > 0;
+      const rawRatioMap = new Map<string, number>();
+      let ratioMean = 0;
+      let ratioStdDev = 0;
+
+      if (hasBothData) {
+        let n = 0;
+        let mean = 0;
+        let m2 = 0;
+
+        allHexIds.forEach((hexId) => {
+          const demand = demandMap.get(hexId) || 0;
+          const supply = supplyMap.get(hexId) || 0;
+          const raw = computeRawRatio(demand, supply);
+          rawRatioMap.set(hexId, raw);
+
+          n += 1;
+          const delta = raw - mean;
+          mean += delta / n;
+          const delta2 = raw - mean;
+          m2 += delta * delta2;
+        });
+
+        ratioMean = mean;
+        ratioStdDev = n > 1 ? Math.sqrt(m2 / (n - 1)) : 0;
       }
-    >();
-
-    const hasBothData = demandMap.size > 0 && supplyMap.size > 0;
-    const rawRatioMap = new Map<string, number>();
-    let ratioMean = 0;
-    let ratioStdDev = 0;
-
-    if (hasBothData) {
-      let n = 0;
-      let mean = 0;
-      let m2 = 0;
 
       allHexIds.forEach((hexId) => {
         const demand = demandMap.get(hexId) || 0;
         const supply = supplyMap.get(hexId) || 0;
-        const raw = computeRawRatio(demand, supply);
-        rawRatioMap.set(hexId, raw);
 
-        n += 1;
-        const delta = raw - mean;
-        mean += delta / n;
-        const delta2 = raw - mean;
-        m2 += delta * delta2;
-      });
+        let ratio = 0;
+        let finalPrice = 0;
+        const hasDemandOnly = demandMap.size > 0 && supplyMap.size === 0;
+        const hasMultiplier = multiplierData.length > 0;
 
-      ratioMean = mean;
-      ratioStdDev = n > 1 ? Math.sqrt(m2 / (n - 1)) : 0;
-    }
+        if (hasBothData) {
+          const raw = rawRatioMap.get(hexId) ?? computeRawRatio(demand, supply);
+          ratio = normalizationEnabled ? computeZScore(raw, ratioMean, ratioStdDev) : raw;
 
-    allHexIds.forEach((hexId) => {
-      const demand = demandMap.get(hexId) || 0;
-      const supply = supplyMap.get(hexId) || 0;
-
-      let ratio = 0;
-      let finalPrice = 0;
-      const hasDemandOnly = demandMap.size > 0 && supplyMap.size === 0;
-      const hasMultiplier = multiplierData.length > 0;
-
-      if (hasBothData) {
-        const raw = rawRatioMap.get(hexId) ?? computeRawRatio(demand, supply);
-        ratio = normalizationEnabled ? computeZScore(raw, ratioMean, ratioStdDev) : raw;
-
-        if (hasMultiplier && basePrice > 0) {
-          const multiplier = getMultiplier(ratio);
-          finalPrice = multiplier * basePrice;
+          if (hasMultiplier && basePrice > 0) {
+            const multiplier = getMultiplier(ratio);
+            finalPrice = multiplier * basePrice;
+          }
+        } else if (hasDemandOnly) {
+          ratio = demand;
+        } else {
+          ratio = 0;
         }
-      } else if (hasDemandOnly) {
-        ratio = demand;
-      } else {
-        ratio = 0;
-      }
 
-      const [lat, lng] = cellToLatLng(hexId);
-      hexMap.set(hexId, {
-        hexId,
-        ratio,
-        center: [lng, lat],
-        demand,
-        supply,
-        finalPrice,
-      });
-    });
-
-    const activeHexIds = new Set(hexMap.keys());
-    const inactiveSet = new Set<string>();
-
-    activeHexIds.forEach((hexId) => {
-      try {
-        const neighbors = gridDisk(hexId, 1);
-        neighbors.forEach((neighborId) => {
-          if (!activeHexIds.has(neighborId)) inactiveSet.add(neighborId);
+        const [lat, lng] = cellToLatLng(hexId);
+        hexMap.set(hexId, {
+          hexId,
+          ratio,
+          center: [lng, lat],
+          demand,
+          supply,
+          finalPrice,
         });
-      } catch {
-        // ignore
-      }
-    });
+      });
 
-    const inactive = Array.from(inactiveSet).map((hexId) => {
-      const [lat, lng] = cellToLatLng(hexId);
-      return {
-        hexId,
-        ratio: 0,
-        center: [lng, lat] as [number, number],
-        demand: 0,
-        supply: 0,
-        finalPrice: 0,
-      };
-    });
+      const activeHexIds = new Set(hexMap.keys());
+      const inactiveSet = new Set<string>();
 
-    return { activeHexagons: Array.from(hexMap.values()), inactiveHexagons: inactive };
+      activeHexIds.forEach((hexId) => {
+        try {
+          const neighbors = gridDisk(hexId, 1);
+          neighbors.forEach((neighborId) => {
+            if (!activeHexIds.has(neighborId)) inactiveSet.add(neighborId);
+          });
+        } catch {
+          // ignore
+        }
+      });
+
+      const inactive = Array.from(inactiveSet).map((hexId) => {
+        const [lat, lng] = cellToLatLng(hexId);
+        return {
+          hexId,
+          ratio: 0,
+          center: [lng, lat] as [number, number],
+          demand: 0,
+          supply: 0,
+          finalPrice: 0,
+        } satisfies HexCell;
+      });
+
+      setHexagons({ activeHexagons: Array.from(hexMap.values()), inactiveHexagons: inactive });
+      setIsCalculating(false);
+    }, 0);
+
+    return () => clearTimeout(t);
   }, [
     filteredDemand,
     availableSupply,
@@ -458,6 +474,7 @@ export default function HexagonMap({
 
   return (
     <div ref={containerRef} className="relative flex-1 h-full">
+      <LoadingOverlay show={isCalculating} label="Updating map..." />
       <DeckGL
         viewState={viewState}
         onViewStateChange={({ viewState: newViewState }) => setViewState(newViewState as MapViewState)}
