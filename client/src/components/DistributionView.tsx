@@ -3,6 +3,7 @@ import { latLngToCell } from "h3-js";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import LoadingOverlay from "@/components/LoadingOverlay";
 import {
   Select,
   SelectContent,
@@ -135,6 +136,9 @@ export default function DistributionView({
 
   // Clicking "Recalculate now" increments this nonce to force recalculation even if values are unchanged.
   const [recalcNonce, setRecalcNonce] = useState(0);
+
+  // UI feedback while heavy recalculation runs.
+  const [isCalculating, setIsCalculating] = useState(false);
 
   // If the available data range changes (new uploads), set default draft/applied values
   // ONLY when the user hasn't already set something.
@@ -320,6 +324,15 @@ export default function DistributionView({
     toValue,
   ]);
 
+  // Stop loading once we have new results.
+  useEffect(() => {
+    if (!isCalculating) return;
+    // Give React a tiny moment to commit the new UI before hiding.
+    const t = setTimeout(() => setIsCalculating(false), 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [values]);
+
   const summary = useMemo(() => {
     if (values.length === 0) return null;
     const sorted = [...values].sort((a, b) => a - b);
@@ -410,7 +423,8 @@ export default function DistributionView({
   const hasAnyData = hasDemand || hasSupply;
 
   return (
-    <div className="h-full w-full overflow-auto p-4">
+    <div className="relative h-full w-full overflow-auto p-4">
+      <LoadingOverlay show={isCalculating} label="Calculating distribution..." />
       <div className="flex flex-col gap-4 max-w-5xl">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
@@ -497,12 +511,17 @@ export default function DistributionView({
               type="button"
               disabled={!hasAnyData}
               onClick={() => {
-                // Apply draft settings and trigger recalculation.
-                setFromValue(draftFromValue);
-                setToValue(draftToValue);
-                setStepMinutes(draftStepMinutes);
-                setBins(draftBins);
-                setRecalcNonce((x) => x + 1);
+                // Two-phase update so the loading overlay can render BEFORE heavy computation.
+                setIsCalculating(true);
+
+                setTimeout(() => {
+                  // Apply draft settings and trigger recalculation.
+                  setFromValue(draftFromValue);
+                  setToValue(draftToValue);
+                  setStepMinutes(draftStepMinutes);
+                  setBins(draftBins);
+                  setRecalcNonce((x) => x + 1);
+                }, 0);
               }}
             >
               Recalculate now
@@ -598,4 +617,3 @@ export default function DistributionView({
     </div>
   );
 }
-
