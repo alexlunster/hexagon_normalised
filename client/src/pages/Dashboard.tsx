@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState, useMemo } from "react";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
 import HexagonMap from "@/components/HexagonMap";
 import ControlPanel from "@/components/ControlPanel";
 import DistributionView from "@/components/DistributionView";
-import LoadingOverlay from "@/components/LoadingOverlay";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface EventData {
@@ -26,7 +25,6 @@ interface MultiplierData {
 }
 
 export default function Dashboard() {
-  const [showDashboardLoading, setShowDashboardLoading] = useState(false);
   const [hexagonResolution, setHexagonResolution] = useState(8);
   const [timeframeMinutes, setTimeframeMinutes] = useState(60);
   const [snapshotTime, setSnapshotTime] = useState(new Date());
@@ -40,30 +38,6 @@ export default function Dashboard() {
 
   // ✅ added (default ON so current behavior remains)
   const [normalizationEnabled, setNormalizationEnabled] = useState(true);
-
-  // Show a brief loading overlay when the user navigates to Dashboard via the sidebar button.
-  useEffect(() => {
-    let shouldShow = false;
-    try {
-      shouldShow = sessionStorage.getItem("dashboard_nav_loading") === "1";
-      if (shouldShow) sessionStorage.removeItem("dashboard_nav_loading");
-    } catch {
-      // ignore
-    }
-
-    if (!shouldShow) return;
-
-    setShowDashboardLoading(true);
-    // Let the UI paint at least once, then hide.
-    let raf2: number | null = null;
-    const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => setShowDashboardLoading(false));
-    });
-    return () => {
-      cancelAnimationFrame(raf1);
-      if (raf2 !== null) cancelAnimationFrame(raf2);
-    };
-  }, []);
 
   // Calculate min and max time from both demand and supply
   const { minTime, maxTime } = useMemo(() => {
@@ -303,8 +277,7 @@ export default function Dashboard() {
         const endKey = keys.find((k) => k.toLowerCase().includes("end"));
         const latKey = keys.find((k) => k.toLowerCase().includes("lat"));
         const lngKey = keys.find(
-          (k) =>
-            k.toLowerCase().includes("lng") || k.toLowerCase().includes("lon")
+          (k) => k.toLowerCase().includes("lng") || k.toLowerCase().includes("lon")
         );
 
         if (startKey && endKey && latKey && lngKey) {
@@ -387,8 +360,7 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="relative flex h-screen">
-      <LoadingOverlay show={showDashboardLoading} label="Loading dashboard..." />
+    <div className="flex h-screen">
       <ControlPanel
         hexagonResolution={hexagonResolution}
         onHexagonResolutionChange={setHexagonResolution}
