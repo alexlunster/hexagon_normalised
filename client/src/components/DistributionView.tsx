@@ -3,7 +3,6 @@ import { latLngToCell } from "h3-js";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import LoadingOverlay from "@/components/LoadingOverlay";
 import {
   Select,
   SelectContent,
@@ -136,9 +135,6 @@ export default function DistributionView({
 
   // Clicking "Recalculate now" increments this nonce to force recalculation even if values are unchanged.
   const [recalcNonce, setRecalcNonce] = useState(0);
-
-  // UI feedback while heavy recalculation runs.
-  const [isCalculating, setIsCalculating] = useState(false);
 
   // If the available data range changes (new uploads), set default draft/applied values
   // ONLY when the user hasn't already set something.
@@ -324,13 +320,6 @@ export default function DistributionView({
     toValue,
   ]);
 
-  // Stop loading once we have new results.
-  useEffect(() => {
-    if (!isCalculating) return;
-    const t = setTimeout(() => setIsCalculating(false), 0);
-    return () => clearTimeout(t);
-  }, [values, isCalculating]);
-
   const summary = useMemo(() => {
     if (values.length === 0) return null;
     const sorted = [...values].sort((a, b) => a - b);
@@ -421,8 +410,7 @@ export default function DistributionView({
   const hasAnyData = hasDemand || hasSupply;
 
   return (
-    <div className="relative h-full w-full overflow-auto p-4">
-      <LoadingOverlay show={isCalculating} label="Calculating distribution..." />
+    <div className="h-full w-full overflow-auto p-4">
       <div className="flex flex-col gap-4 max-w-5xl">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
@@ -509,16 +497,12 @@ export default function DistributionView({
               type="button"
               disabled={!hasAnyData}
               onClick={() => {
-                // Two-phase update so the loading overlay can render BEFORE heavy computation.
-                setIsCalculating(true);
-                setTimeout(() => {
-                  // Apply draft settings and trigger recalculation.
-                  setFromValue(draftFromValue);
-                  setToValue(draftToValue);
-                  setStepMinutes(draftStepMinutes);
-                  setBins(draftBins);
-                  setRecalcNonce((x) => x + 1);
-                }, 0);
+                // Apply draft settings and trigger recalculation.
+                setFromValue(draftFromValue);
+                setToValue(draftToValue);
+                setStepMinutes(draftStepMinutes);
+                setBins(draftBins);
+                setRecalcNonce((x) => x + 1);
               }}
             >
               Recalculate now
@@ -542,9 +526,76 @@ export default function DistributionView({
           </div>
         </div>
 
-        {/* rest of file unchanged */}
-        {/* ... */}
+        {!hasAnyData ? (
+          <Card className="p-6">
+            <div className="text-sm text-muted-foreground">
+              Upload demand and/or supply data to see a distribution.
+            </div>
+          </Card>
+        ) : values.length === 0 ? (
+          <Card className="p-6">
+            <div className="text-sm text-muted-foreground">
+              No values found for the selected time range.
+            </div>
+          </Card>
+        ) : (
+          <>
+            {summary ? (
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                <Card className="p-3">
+                  <div className="text-xs text-muted-foreground">Samples</div>
+                  <div className="text-lg font-semibold">{summary.n}</div>
+                </Card>
+                <Card className="p-3">
+                  <div className="text-xs text-muted-foreground">Min</div>
+                  <div className="text-lg font-semibold">{summary.min.toFixed(2)}</div>
+                </Card>
+                <Card className="p-3">
+                  <div className="text-xs text-muted-foreground">Median</div>
+                  <div className="text-lg font-semibold">{summary.p50.toFixed(2)}</div>
+                </Card>
+                <Card className="p-3">
+                  <div className="text-xs text-muted-foreground">Mean</div>
+                  <div className="text-lg font-semibold">{summary.mean.toFixed(2)}</div>
+                </Card>
+                <Card className="p-3">
+                  <div className="text-xs text-muted-foreground">Max</div>
+                  <div className="text-lg font-semibold">{summary.max.toFixed(2)}</div>
+                </Card>
+              </div>
+            ) : null}
+
+            <Card className="p-4">
+              <div className="h-[420px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={histogramData}
+                    margin={{ top: 8, right: 16, bottom: 32, left: 8 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis
+                      dataKey="bin"
+                      interval={Math.max(0, Math.floor(histogramData.length / 8))}
+                      angle={-25}
+                      textAnchor="end"
+                      height={70}
+                      tick={{ fontSize: 12 }}
+                    />
+                    <YAxis allowDecimals={false} />
+                    <Tooltip />
+                    <Bar dataKey="count" fill="#7dd3fc" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <p className="mt-3 text-xs text-muted-foreground">
+                Distribution is computed by sampling snapshots in the selected time range and
+                aggregating values across all active hexagons per snapshot.
+              </p>
+            </Card>
+          </>
+        )}
       </div>
     </div>
   );
 }
+
