@@ -39,6 +39,9 @@ export default function Dashboard() {
   // ✅ added (default ON so current behavior remains)
   const [normalizationEnabled, setNormalizationEnabled] = useState(true);
 
+  const [activeTab, setActiveTab] = useState<"map" | "distribution">("map");
+  const [focusHexId, setFocusHexId] = useState<string | null>(null);
+
   // Calculate min and max time from both demand and supply
   const { minTime, maxTime } = useMemo(() => {
     const times: number[] = [];
@@ -388,7 +391,7 @@ export default function Dashboard() {
         onNormalizationEnabledChange={setNormalizationEnabled}
       />
       <div className="flex-1 h-full min-w-0">
-        <Tabs defaultValue="map" className="h-full">
+        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "map" | "distribution")} className="h-full">
           <div className="flex items-center justify-between px-4 pt-3">
             <TabsList>
               <TabsTrigger value="map">Map</TabsTrigger>
@@ -406,6 +409,8 @@ export default function Dashboard() {
               timeframeMinutes={timeframeMinutes}
               snapshotTime={snapshotTime}
               normalizationEnabled={normalizationEnabled}
+              focusHexId={focusHexId}
+              onFocusHexSeen={() => setFocusHexId(null)}
             />
           </TabsContent>
 
@@ -420,6 +425,11 @@ export default function Dashboard() {
               normalizationEnabled={normalizationEnabled}
               minTime={minTime}
               maxTime={maxTime}
+              onSelectHexTime={({ hexId, timestamp }) => {
+                setSnapshotTime(timestamp);
+                setFocusHexId(hexId);
+                setActiveTab("map");
+              }}
             />
           </TabsContent>
         </Tabs>

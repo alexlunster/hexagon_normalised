@@ -41,6 +41,8 @@ interface HexagonMapProps {
   timeframeMinutes: number;
   hexagonResolution: number;
   normalizationEnabled: boolean;
+  focusHexId?: string | null;
+  onFocusHexSeen?: () => void;
 }
 
 interface LabelPosition {
@@ -77,6 +79,8 @@ export default function HexagonMap({
   timeframeMinutes,
   hexagonResolution,
   normalizationEnabled,
+  focusHexId = null,
+  onFocusHexSeen,
 }: HexagonMapProps) {
   const [labelPositions, setLabelPositions] = useState<LabelPosition[]>([]);
   const prevPositionsRef = useRef<string>("");
@@ -288,6 +292,33 @@ export default function HexagonMap({
     normalizationEnabled,
   ]);
 
+  // Center map on focused hex when navigating from Distribution tab (defer so Map tab is visible first)
+  useEffect(() => {
+    if (!focusHexId) return;
+    let cancelled = false;
+    let clearFocusTimeout: ReturnType<typeof setTimeout> | undefined;
+    const id = setTimeout(() => {
+      if (cancelled) return;
+      try {
+        const [lat, lng] = cellToLatLng(focusHexId);
+        setViewState((prev) => ({
+          ...prev,
+          latitude: lat,
+          longitude: lng,
+          zoom: Math.max(prev.zoom, 14),
+        }));
+        clearFocusTimeout = setTimeout(() => onFocusHexSeen?.(), 4000);
+      } catch {
+        onFocusHexSeen?.();
+      }
+    }, 150);
+    return () => {
+      cancelled = true;
+      clearTimeout(id);
+      if (clearFocusTimeout) clearTimeout(clearFocusTimeout);
+    };
+  }, [focusHexId, onFocusHexSeen]);
+
   // Auto-center map on first data load
   useEffect(() => {
     if ((filteredDemand.length > 0 || availableSupply.length > 0) && viewState.zoom === 11) {
@@ -325,6 +356,43 @@ export default function HexagonMap({
   };
 
   const currentFontSize = getFontSize(viewState.zoom);
+
+  // Heatmap: value range for green (low) → red (high) gradient; alpha for transparency
+  const heatmapRange = useMemo(() => {
+    if (activeHexagons.length === 0) return { min: 0, max: 1, usePrice: false };
+    const hasPrice = activeHexagons.some((h) => h.finalPrice > 0);
+    const values = hasPrice
+      ? activeHexagons.map((h) => h.finalPrice)
+      : activeHexagons.map((h) => h.ratio);
+    let min = Infinity;
+    let max = -Infinity;
+    for (const v of values) {
+      if (Number.isFinite(v)) {
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+    }
+    if (!Number.isFinite(min)) min = 0;
+    if (!Number.isFinite(max) || max <= min) max = min + 1;
+    return { min, max, usePrice: hasPrice };
+  }, [activeHexagons]);
+
+  // Green (low) → Red (high) with transparent alpha so map shows through
+  const HEATMAP_ALPHA = 0.25;
+  const valueToHeatColor = useCallback(
+    (d: (typeof activeHexagons)[0]): [number, number, number, number] => {
+      const value = heatmapRange.usePrice ? d.finalPrice : d.ratio;
+      const t = Number.isFinite(value)
+        ? Math.max(0, Math.min(1, (value - heatmapRange.min) / (heatmapRange.max - heatmapRange.min)))
+        : 0;
+      // Green (0) -> Red (1): R increases, G decreases
+      const r = Math.round(t * 255);
+      const g = Math.round((1 - t) * 255);
+      const b = 0;
+      return [r, g, b, Math.round(HEATMAP_ALPHA * 255)];
+    },
+    [heatmapRange]
+  );
 
   // Create layers (no hover picking needed anymore)
   const layers = useMemo(() => {
@@ -366,11 +434,26 @@ export default function HexagonMap({
     }
 
     if (activeHexagons.length > 0) {
+      // Heatmap fill: green (low) to red (high), transparent
+      allLayers.push(
+        new H3HexagonLayer({
+          id: "active-hexagon-heatmap",
+          data: activeHexagons,
+          pickable: false,
+          wireframe: false,
+          filled: true,
+          extruded: false,
+          getHexagon: (d: any) => d.hexId,
+          getFillColor: (d: any) => valueToHeatColor(d),
+          getLineColor: [0, 0, 0, 0],
+        })
+      );
+      // Outline on top so hex boundaries stay visible
       allLayers.push(
         new H3HexagonLayer({
           id: "active-hexagon-layer",
           data: activeHexagons,
-          pickable: false, // ✅ important: no picking on hex border
+          pickable: false,
           wireframe: true,
           filled: false,
           extruded: false,
@@ -382,8 +465,31 @@ export default function HexagonMap({
       );
     }
 
+    // Highlight focused hex when navigating from Distribution
+    if (focusHexId) {
+      try {
+        const [lat, lng] = cellToLatLng(focusHexId);
+        allLayers.push(
+          new H3HexagonLayer({
+            id: "focus-hexagon-layer",
+            data: [{ hexId: focusHexId, center: [lng, lat] as [number, number] }],
+            pickable: false,
+            wireframe: true,
+            filled: true,
+            extruded: false,
+            getHexagon: (d: any) => d.hexId,
+            getFillColor: [255, 165, 0, 80],
+            getLineColor: [255, 140, 0, 255],
+            lineWidthMinPixels: 4,
+          })
+        );
+      } catch {
+        // ignore invalid hex
+      }
+    }
+
     return allLayers;
-  }, [activeHexagons, inactiveHexagons]);
+  }, [activeHexagons, inactiveHexagons, valueToHeatColor, focusHexId]);
 
   // Update label positions when viewport changes
   const updateLabels = useCallback(

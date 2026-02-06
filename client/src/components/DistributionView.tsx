@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { latLngToCell } from "h3-js";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Select,
   SelectContent,
@@ -19,6 +20,13 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 interface EventData {
   timestamp: Date;
@@ -40,6 +48,12 @@ interface MultiplierData {
 
 type DistributionMode = "price" | "coefficient" | "demand" | "supply";
 
+export type DistributionEntry = {
+  value: number;
+  hexId: string;
+  timestamp: Date;
+};
+
 type Props = {
   demandEvents: EventData[];
   supplyVehicles: SupplyData[];
@@ -50,6 +64,7 @@ type Props = {
   normalizationEnabled: boolean;
   minTime: Date | null;
   maxTime: Date | null;
+  onSelectHexTime?: (params: { hexId: string; timestamp: Date }) => void;
 };
 
 function toDateTimeLocalValue(d: Date) {
@@ -90,6 +105,7 @@ export default function DistributionView({
   normalizationEnabled,
   minTime,
   maxTime,
+  onSelectHexTime,
 }: Props) {
   const hasDemand = demandEvents.length > 0;
   const hasSupply = supplyVehicles.length > 0;
@@ -135,6 +151,22 @@ export default function DistributionView({
 
   // Clicking "Recalculate now" increments this nonce to force recalculation even if values are unchanged.
   const [recalcNonce, setRecalcNonce] = useState(0);
+
+  // Async distribution result and loading state (calculation runs off main thread so we can show loading UI).
+  type DistributionResult = {
+    values: number[];
+    entries: DistributionEntry[];
+    effectiveFrom: Date | null;
+    effectiveTo: Date | null;
+  };
+  const [distributionResult, setDistributionResult] = useState<DistributionResult>({
+    values: [],
+    entries: [],
+    effectiveFrom: null,
+    effectiveTo: null,
+  });
+  const [isCalculating, setIsCalculating] = useState(false);
+  const calcRunIdRef = useRef(0);
 
   // If the available data range changes (new uploads), set default draft/applied values
   // ONLY when the user hasn't already set something.
@@ -182,12 +214,12 @@ export default function DistributionView({
     return sorted[sorted.length - 1]?.multiplier ?? 1;
   };
 
-  const computeSnapshotValues = (snapshotTime: Date): number[] => {
+  // Returns { value, hexId }[] for building histogram bin entries (clickable list).
+  const computeSnapshotEntries = (snapshotTime: Date): { value: number; hexId: string }[] => {
     const demandMap = new Map<string, number>();
     const supplyMap = new Map<string, number>();
     const allHexIds = new Set<string>();
 
-    // Demand: window is [snapshot - timeframe, snapshot]
     if (hasDemand) {
       const windowStart = new Date(
         snapshotTime.getTime() - timeframeMinutes * 60 * 1000
@@ -201,7 +233,6 @@ export default function DistributionView({
       }
     }
 
-    // Supply: vehicle is active if start <= snapshot <= end
     if (hasSupply) {
       for (const v of supplyVehicles) {
         if (v.startTime > snapshotTime || v.endTime < snapshotTime) continue;
@@ -213,19 +244,17 @@ export default function DistributionView({
 
     if (allHexIds.size === 0) return [];
 
-    // If only one dataset exists, distribution is counts.
     if (!hasBoth) {
-      const out: number[] = [];
+      const out: { value: number; hexId: string }[] = [];
       allHexIds.forEach((hexId) => {
         const demand = demandMap.get(hexId) || 0;
         const supply = supplyMap.get(hexId) || 0;
-        if (mode === "demand") out.push(demand);
-        else if (mode === "supply") out.push(supply);
+        if (mode === "demand") out.push({ value: demand, hexId });
+        else if (mode === "supply") out.push({ value: supply, hexId });
       });
       return out;
     }
 
-    // Both datasets: compute raw ratio per hex
     const rawRatioMap = new Map<string, number>();
     let mean = 0;
     let m2 = 0;
@@ -245,7 +274,7 @@ export default function DistributionView({
 
     const stdDev = n > 1 ? Math.sqrt(m2 / (n - 1)) : 0;
 
-    const out: number[] = [];
+    const out: { value: number; hexId: string }[] = [];
     allHexIds.forEach((hexId) => {
       const raw = rawRatioMap.get(hexId) ?? 0;
       const ratio =
@@ -253,59 +282,84 @@ export default function DistributionView({
 
       if (mode === "price") {
         const multiplier = getMultiplier(ratio);
-        out.push(multiplier * basePrice);
+        out.push({ value: multiplier * basePrice, hexId });
       } else {
-        out.push(ratio);
+        out.push({ value: ratio, hexId });
       }
     });
-
     return out;
   };
 
-  const { values, effectiveFrom, effectiveTo } = useMemo(() => {
+  // Run distribution calculation asynchronously so we can show a loading state.
+  useEffect(() => {
     if (!minTime || !maxTime) {
-      return {
-        values: [] as number[],
-        effectiveFrom: null as Date | null,
-        effectiveTo: null as Date | null,
-      };
+      setDistributionResult({
+        values: [],
+        entries: [],
+        effectiveFrom: null,
+        effectiveTo: null,
+      });
+      setIsCalculating(false);
+      return;
     }
 
-    const parsedFrom = fromValue ? new Date(fromValue) : minTime;
-    const parsedTo = toValue ? new Date(toValue) : maxTime;
+    const runId = ++calcRunIdRef.current;
+    setIsCalculating(true);
 
-    const from = new Date(Math.max(minTime.getTime(), parsedFrom.getTime()));
-    const to = new Date(Math.min(maxTime.getTime(), parsedTo.getTime()));
+    const run = () => {
+      const parsedFrom = fromValue ? new Date(fromValue) : minTime!;
+      const parsedTo = toValue ? new Date(toValue) : maxTime!;
 
-    if (from.getTime() > to.getTime()) {
-      return { values: [] as number[], effectiveFrom: from, effectiveTo: to };
-    }
+      const from = new Date(Math.max(minTime!.getTime(), parsedFrom.getTime()));
+      const to = new Date(Math.min(maxTime!.getTime(), parsedTo.getTime()));
 
-    const stepMs = Math.max(1, stepMinutes) * 60 * 1000;
-    const collected: number[] = [];
-
-    // Always include the range endpoints, then fill the middle by step.
-    const times: number[] = [];
-    times.push(from.getTime());
-    for (let t = from.getTime() + stepMs; t < to.getTime(); t += stepMs) {
-      times.push(t);
-    }
-    if (to.getTime() !== from.getTime()) times.push(to.getTime());
-
-    for (const t of times) {
-      const snapshot = new Date(t);
-      const snapshotValues = computeSnapshotValues(snapshot);
-      for (const v of snapshotValues) {
-        const vv = safeNumber(v);
-        if (Number.isFinite(vv)) collected.push(vv);
+      if (from.getTime() > to.getTime()) {
+        if (runId === calcRunIdRef.current) {
+          setDistributionResult({ values: [], entries: [], effectiveFrom: from, effectiveTo: to });
+          setIsCalculating(false);
+        }
+        return;
       }
-    }
 
-    return { values: collected, effectiveFrom: from, effectiveTo: to };
+      const stepMs = Math.max(1, stepMinutes) * 60 * 1000;
+      const collectedValues: number[] = [];
+      const collectedEntries: DistributionEntry[] = [];
+
+      const times: number[] = [];
+      times.push(from.getTime());
+      for (let t = from.getTime() + stepMs; t < to.getTime(); t += stepMs) {
+        times.push(t);
+      }
+      if (to.getTime() !== from.getTime()) times.push(to.getTime());
+
+      for (const t of times) {
+        const snapshot = new Date(t);
+        const snapshotEntries = computeSnapshotEntries(snapshot);
+        for (const e of snapshotEntries) {
+          const vv = safeNumber(e.value);
+          if (Number.isFinite(vv)) {
+            collectedValues.push(vv);
+            collectedEntries.push({ value: vv, hexId: e.hexId, timestamp: snapshot });
+          }
+        }
+      }
+
+      if (runId === calcRunIdRef.current) {
+        setDistributionResult({
+          values: collectedValues,
+          entries: collectedEntries,
+          effectiveFrom: from,
+          effectiveTo: to,
+        });
+        setIsCalculating(false);
+      }
+    };
+
+    const id = setTimeout(run, 0);
+    return () => clearTimeout(id);
   }, [
     recalcNonce,
     basePrice,
-    bins,
     demandEvents,
     fromValue,
     hexagonResolution,
@@ -320,6 +374,8 @@ export default function DistributionView({
     toValue,
   ]);
 
+  const { values, entries, effectiveFrom, effectiveTo } = distributionResult;
+
   const summary = useMemo(() => {
     if (values.length === 0) return null;
     const sorted = [...values].sort((a, b) => a - b);
@@ -330,14 +386,15 @@ export default function DistributionView({
     return { n: sorted.length, min, max, mean, p50 };
   }, [values]);
 
-  const histogramData = useMemo(() => {
-    if (values.length === 0) return [] as { bin: string; count: number }[];
+  type HistogramBin = { bin: string; count: number; entries: DistributionEntry[] };
+  const histogramData = useMemo((): HistogramBin[] => {
+    if (entries.length === 0) return [];
     const nBins = Math.max(5, Math.min(60, Math.round(bins)));
 
-    // Avoid Math.min(...values)/Math.max(...values) for large arrays (can throw RangeError).
     let min = Infinity;
     let max = -Infinity;
-    for (const v of values) {
+    for (const e of entries) {
+      const v = e.value;
       if (!Number.isFinite(v)) continue;
       if (v < min) min = v;
       if (v > max) max = v;
@@ -345,26 +402,33 @@ export default function DistributionView({
     if (!Number.isFinite(min) || !Number.isFinite(max)) return [];
 
     if (min === max) {
-      return [{ bin: `${min.toFixed(2)}`, count: values.length }];
+      return [{ bin: `${min.toFixed(2)}`, count: entries.length, entries }];
     }
 
     const width = (max - min) / nBins;
-    const counts = Array.from({ length: nBins }, () => 0);
+    const binEntries: DistributionEntry[][] = Array.from({ length: nBins }, () => []);
 
-    for (const v of values) {
-      const idx = Math.min(nBins - 1, Math.max(0, Math.floor((v - min) / width)));
-      counts[idx] += 1;
+    for (const e of entries) {
+      const idx = Math.min(nBins - 1, Math.max(0, Math.floor((e.value - min) / width)));
+      binEntries[idx].push(e);
     }
 
-    const out = counts.map((count, i) => {
+    return binEntries.map((ents, i) => {
       const a = min + i * width;
       const b = min + (i + 1) * width;
       const label = `${a.toFixed(2)}–${b.toFixed(2)}`;
-      return { bin: label, count };
+      return { bin: label, count: ents.length, entries: ents };
     });
+  }, [bins, entries]);
 
-    return out;
-  }, [bins, values]);
+  const [selectedBinEntries, setSelectedBinEntries] = useState<DistributionEntry[] | null>(null);
+
+  // Add fullHeight to each bin so we can draw a transparent full-height bar for clickability
+  const histogramChartData = useMemo(() => {
+    if (histogramData.length === 0) return [];
+    const maxCount = Math.max(...histogramData.map((d) => d.count), 1);
+    return histogramData.map((d) => ({ ...d, fullHeight: maxCount }));
+  }, [histogramData]);
 
   const downloadDistributionCsv = () => {
     if (histogramData.length === 0) return;
@@ -410,7 +474,22 @@ export default function DistributionView({
   const hasAnyData = hasDemand || hasSupply;
 
   return (
-    <div className="h-full w-full overflow-auto p-4">
+    <div className="h-full w-full overflow-auto p-4 relative">
+      {hasAnyData && isCalculating && (
+        <div
+          className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-4 rounded-lg bg-background/90 backdrop-blur-sm"
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <Spinner className="size-10 text-primary" />
+          <p className="text-sm font-medium text-muted-foreground">
+            Calculating distribution…
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Sampling snapshots and aggregating values
+          </p>
+        </div>
+      )}
       <div className="flex flex-col gap-4 max-w-5xl">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
@@ -569,13 +648,13 @@ export default function DistributionView({
               <div className="h-[420px] w-full">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart
-                    data={histogramData}
+                    data={histogramChartData}
                     margin={{ top: 8, right: 16, bottom: 32, left: 8 }}
                   >
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis
                       dataKey="bin"
-                      interval={Math.max(0, Math.floor(histogramData.length / 8))}
+                      interval={Math.max(0, Math.floor(histogramChartData.length / 8))}
                       angle={-25}
                       textAnchor="end"
                       height={70}
@@ -583,15 +662,61 @@ export default function DistributionView({
                     />
                     <YAxis allowDecimals={false} />
                     <Tooltip />
-                    <Bar dataKey="count" fill="#7dd3fc" />
+                    {/* Visible bar (drawn first, behind) */}
+                    <Bar dataKey="count" fill="#7dd3fc" isAnimationActive={true} />
+                    {/* Transparent full-height bar so the whole column is clickable (drawn on top) */}
+                    <Bar
+                      dataKey="fullHeight"
+                      fill="transparent"
+                      cursor="pointer"
+                      isAnimationActive={false}
+                      onClick={(payload: unknown) => {
+                        const data = (payload && typeof payload === "object" && "payload" in payload)
+                          ? (payload as { payload: HistogramBin & { fullHeight?: number } }).payload
+                          : (payload as HistogramBin);
+                        if (data?.entries?.length) setSelectedBinEntries(data.entries);
+                      }}
+                    />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
               <p className="mt-3 text-xs text-muted-foreground">
                 Distribution is computed by sampling snapshots in the selected time range and
-                aggregating values across all active hexagons per snapshot.
+                aggregating values across all active hexagons per snapshot. Click a bar to see entries.
               </p>
             </Card>
+
+            {/* Sheet: list of entries for the selected histogram bin */}
+            <Sheet open={selectedBinEntries !== null} onOpenChange={(open) => !open && setSelectedBinEntries(null)}>
+              <SheetContent side="right" className="w-full sm:max-w-md">
+                <SheetHeader>
+                  <SheetTitle>Entries in this bin</SheetTitle>
+                </SheetHeader>
+                {selectedBinEntries && selectedBinEntries.length > 0 ? (
+                  <ScrollArea className="h-[calc(100vh-120px)] mt-4 pr-4">
+                    <ul className="space-y-1">
+                      {selectedBinEntries.map((e, i) => (
+                        <li key={`${e.hexId}-${e.timestamp.getTime()}-${i}`}>
+                          <button
+                            type="button"
+                            className="w-full text-left px-3 py-2 rounded-md text-sm hover:bg-muted focus:bg-muted focus:outline-none border border-transparent hover:border-border"
+                            onClick={() => {
+                              onSelectHexTime?.({ hexId: e.hexId, timestamp: e.timestamp });
+                              setSelectedBinEntries(null);
+                            }}
+                          >
+                            <span className="font-mono text-muted-foreground">{e.hexId}</span>
+                            <span className="mx-2">·</span>
+                            <span>{e.timestamp.toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" })}</span>
+                            <span className="ml-2 text-muted-foreground">({e.value.toFixed(2)})</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </ScrollArea>
+                ) : null}
+              </SheetContent>
+            </Sheet>
           </>
         )}
       </div>

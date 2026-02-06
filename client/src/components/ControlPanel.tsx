@@ -8,8 +8,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Upload, Trash2 } from "lucide-react";
-import { useRef } from "react";
+import { Upload, Trash2, Play, Pause } from "lucide-react";
+import { useRef, useState, useEffect } from "react";
 
 interface ControlPanelProps {
   onDemandUpload: (file: File) => void;
@@ -71,6 +71,14 @@ export default function ControlPanel({
   const demandInputRef = useRef<HTMLInputElement>(null);
   const supplyInputRef = useRef<HTMLInputElement>(null);
   const multiplierInputRef = useRef<HTMLInputElement>(null);
+
+  // Playback: advance snapshot time smoothly by playSpeed minutes per real second
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playSpeed, setPlaySpeed] = useState<number>(1); // minutes per real second
+  const rafRef = useRef<number | null>(null);
+  const lastTickRef = useRef<number>(0);
+  const snapshotTimeRef = useRef(snapshotTime);
+  snapshotTimeRef.current = snapshotTime;
 
   const handleDemandSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -168,6 +176,45 @@ export default function ControlPanel({
     minTime && maxTime
       ? Math.ceil((maxTime.getTime() - minTime.getTime()) / (1000 * 60 * 60 * 24))
       : 0;
+
+  // Playback: smooth advance using requestAnimationFrame and elapsed time
+  useEffect(() => {
+    if (!isPlaying || !minTime || !maxTime) {
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      return;
+    }
+    lastTickRef.current = performance.now();
+
+    const tick = () => {
+      const now = performance.now();
+      const elapsedSec = (now - lastTickRef.current) / 1000;
+      lastTickRef.current = now;
+
+      const current = snapshotTimeRef.current;
+      const advanceMs = elapsedSec * playSpeed * 60 * 1000;
+      const next = new Date(current.getTime() + advanceMs);
+
+      if (next.getTime() >= maxTime.getTime()) {
+        onSnapshotTimeChange(new Date(maxTime));
+        setIsPlaying(false);
+        rafRef.current = null;
+        return;
+      }
+      onSnapshotTimeChange(next);
+      rafRef.current = requestAnimationFrame(tick);
+    };
+
+    rafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, [isPlaying, playSpeed, minTime, maxTime, onSnapshotTimeChange]);
 
   return (
     <Card className="w-96 h-full overflow-y-auto p-6 space-y-6 rounded-none border-r">
@@ -400,6 +447,44 @@ export default function ControlPanel({
               <span>12:00 AM</span>
               <span>11:59 PM</span>
             </div>
+          </div>
+
+          {/* Playback: auto-advance snapshot time */}
+          <div className="flex items-center gap-2 pt-2">
+            <Button
+              type="button"
+              variant={isPlaying ? "secondary" : "default"}
+              size="sm"
+              onClick={() => setIsPlaying((p) => !p)}
+              className="shrink-0"
+            >
+              {isPlaying ? (
+                <Pause className="h-4 w-4 mr-1" />
+              ) : (
+                <Play className="h-4 w-4 mr-1" />
+              )}
+              {isPlaying ? "Pause" : "Play"}
+            </Button>
+            <Select
+              value={String(playSpeed)}
+              onValueChange={(v) => setPlaySpeed(Number(v))}
+              disabled={isPlaying}
+            >
+              <SelectTrigger className="w-[100px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="1">1×</SelectItem>
+                <SelectItem value="2">2×</SelectItem>
+                <SelectItem value="5">5×</SelectItem>
+                <SelectItem value="10">10×</SelectItem>
+                <SelectItem value="30">30×</SelectItem>
+                <SelectItem value="60">60×</SelectItem>
+              </SelectContent>
+            </Select>
+            <span className="text-xs text-muted-foreground shrink-0">
+              min/sec
+            </span>
           </div>
         </>
       )}
